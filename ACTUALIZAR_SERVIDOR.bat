@@ -11,12 +11,26 @@ echo    Actualizador Automatico desde GitHub (git pull + build + restart)
 echo =====================================================================
 echo.
 
-echo [1/4] Descargando ultimos cambios desde GitHub...
-git pull
-if errorlevel 1 (
-  echo [ERROR] No se pudo ejecutar git pull. Verifica la conexion o estado del repositorio.
-  pause
-  exit /b 1
+if not exist ".git" (
+  echo [INFO] No se encontro la carpeta .git. Vinculando con el repositorio oficial...
+  git init
+  git remote add origin https://github.com/LeCrissOr/ChatBot-Proyect-Deploy.git
+  git fetch origin main
+  git branch -M main
+  git reset --hard origin/main
+  if errorlevel 1 (
+    echo [ERROR] No se pudo conectar con GitHub. Verifica la conexion a Internet.
+    pause
+    exit /b 1
+  )
+) else (
+  echo [1/5] Descargando ultimos cambios desde GitHub...
+  git pull
+  if errorlevel 1 (
+    echo [ERROR] No se pudo ejecutar git pull. Verifica la conexion o estado del repositorio.
+    pause
+    exit /b 1
+  )
 )
 
 echo [2/4] Verificando dependencias y esquema Prisma...
