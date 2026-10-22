@@ -1,0 +1,39 @@
+@echo off
+setlocal EnableDelayedExpansion
+title HUN - Servidor Unificado de Produccion (Puerto 3001)
+color 0a
+
+echo =====================================================================
+echo    HOSPITAL UNIVERSITARIO NACIONAL DE COLOMBIA (HUN)
+echo    Servidor de Produccion (Backend + Dashboard + WebSockets + WhatsApp)
+echo =====================================================================
+echo.
+
+set "PATH=C:\Program Files\nodejs;%PATH%"
+cd /d "%~dp0"
+
+if not exist "backend\node_modules" (
+  echo [INFO] Primera ejecucion en este servidor. Instalando dependencias...
+  call "%~dp0INSTALAR_EN_SERVIDOR.bat"
+)
+
+if not exist "backend\dist\server.js" (
+  echo [INFO] Compilacion de produccion no encontrada. Ejecutando INSTALAR_EN_SERVIDOR.bat...
+  call "%~dp0INSTALAR_EN_SERVIDOR.bat"
+)
+
+echo Verificando si el puerto 3001 ya esta activo...
+netstat -ano | findstr /R /C:":3001 .*LISTENING" >nul 2>&1
+if not errorlevel 1 (
+  echo [INFO] El servidor ya se encuentra activo en el puerto 3001.
+  start http://localhost:3001
+  pause
+  exit /b 0
+)
+
+echo Iniciando Servidor Unificado HUN en http://localhost:3001 ...
+start "" cmd /c "timeout /t 4 /nobreak >nul && start http://localhost:3001"
+cd /d "%~dp0backend"
+set NODE_ENV=production
+node dist/server.js
+pause
