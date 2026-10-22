@@ -25,7 +25,8 @@ if not exist ".git" (
   )
 ) else (
   echo [1/5] Descargando ultimos cambios desde GitHub...
-  git pull
+  git branch --set-upstream-to=origin/main main >nul 2>&1
+  git pull origin main
   if errorlevel 1 (
     echo [ERROR] No se pudo ejecutar git pull. Verifica la conexion o estado del repositorio.
     pause
