@@ -43,7 +43,7 @@ export class WhatsAppService {
 
       // 1. Si está conectado mediante WhatsApp Web (Baileys / QR)
       if (channel !== 'META' && baileysService.isConnected()) {
-        return { success: await baileysService.sendMessage(cleanPhone, cleanText) };
+        return { success: await baileysService.sendMessage(toPhone || cleanPhone, cleanText) };
       }
 
       // 2. Si no hay Baileys, verificar si hay Meta Cloud API
@@ -101,7 +101,7 @@ export class WhatsAppService {
 
       // 1. Si está conectado mediante WhatsApp Web (Baileys / QR)
       if (channel !== 'META' && baileysService.isConnected()) {
-        return { success: await baileysService.sendMessage(cleanPhone, cleanText) };
+        return { success: await baileysService.sendMessage(toPhone || cleanPhone, cleanText) };
       }
 
       // 2. Si no hay token de Meta, modo simulado
@@ -170,7 +170,7 @@ export class WhatsAppService {
 
       // 1. Si está conectado mediante WhatsApp Web (Baileys / QR)
       if (channel !== 'META' && baileysService.isConnected()) {
-        return { success: await baileysService.sendMessage(cleanPhone, cleanText) };
+        return { success: await baileysService.sendMessage(toPhone || cleanPhone, cleanText) };
       }
 
       // 2. Si no hay token de Meta, modo simulado

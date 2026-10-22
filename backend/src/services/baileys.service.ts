@@ -142,7 +142,7 @@ class BaileysService {
 
       // Escucha de mensajes entrantes
       this.sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify') return;
+        if (type !== 'notify' && type !== 'append') return;
 
         for (const msg of messages) {
           if (!msg.message) continue;
@@ -151,8 +151,11 @@ class BaileysService {
           const remoteJid = msg.key.remoteJid || '';
           if (remoteJid.includes('@broadcast') || remoteJid.includes('@g.us')) continue;
 
-          // Si el mensaje es enviado por nosotros mismos desde el celular, no responder en bucle
-          if (msg.key.fromMe) continue;
+          // Si el mensaje es enviado por nosotros mismos desde el celular que escaneó el QR, no responder en bucle
+          if (msg.key.fromMe) {
+            console.log(`ℹ️ [Baileys] Mensaje saliente/propio ignorado (fromMe=true, enviado desde el número del Bot): ${remoteJid}`);
+            continue;
+          }
 
           const senderPhone = remoteJid.split('@')[0];
           const senderName = msg.pushName || 'Paciente';
@@ -160,6 +163,9 @@ class BaileysService {
           // Guardar en el mapa de JIDs para enrutamiento exacto (@lid o @s.whatsapp.net)
           this.jidMap.set(senderPhone, remoteJid);
           this.jidMap.set(remoteJid, remoteJid);
+          const rawDigits = remoteJid.replace(/[^0-9]/g, '');
+          if (rawDigits) this.jidMap.set(rawDigits, remoteJid);
+
           const normalizedSender = normalizeColombianPhone(senderPhone);
           if (normalizedSender) {
             this.jidMap.set(normalizedSender, remoteJid);

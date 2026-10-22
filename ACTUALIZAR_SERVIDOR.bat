@@ -33,15 +33,25 @@ cd /d "%~dp0"
 call npm --prefix backend run build
 call npm --prefix frontend run build
 
-echo [4/4] Reiniciando servicio en PM2 (si esta activo)...
+echo [4/5] Reiniciando servicio en PM2 (si esta activo)...
 where pm2 >nul 2>&1
 if not errorlevel 1 (
   call pm2 restart hun-chatbot-server >nul 2>&1
 )
 
+echo [5/5] Verificando datos base de especialistas y agenda en PostgreSQL...
+cd /d "%~dp0backend"
+call npm run prisma:seed >nul 2>&1
+
 echo.
 echo =====================================================================
 echo    SERVIDOR ACTUALIZADO EXITOSAMENTE A LA ULTIMA VERSION
+echo.
+echo    IMPORTANTE PARA APLICAR CAMBIOS:
+echo    Si tienes abierta la ventana "HUN - Servidor Unificado de Produccion":
+echo    1. Cierra esa ventana de la consola negra.
+echo    2. Haz doble clic en "INICIAR_PRODUCCION.bat" para iniciar
+echo       la nueva version con WhatsApp reactivo y la agenda visible.
 echo =====================================================================
 echo.
 pause

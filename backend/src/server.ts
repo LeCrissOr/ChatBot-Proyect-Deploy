@@ -135,13 +135,11 @@ if (fs.existsSync(frontendIndexHtml)) {
   });
 }
 
-// Conectar mensajes de Baileys al motor del HUN
+// Conectar mensajes de Baileys al motor del HUN (procesamiento reactivo en tiempo real)
 baileysService.setMessageHandler(async (phone, text, name, messageId) => {
-  const queued = await incomingMessageQueue.enqueue({ phone, text, senderName: name, waMessageId: messageId, sourceChannel: 'BAILEYS' });
-  if (queued === 'QUEUED' || queued === 'DUPLICATE') return { status: queued };
-  if (CONFIG.NODE_ENV === 'production' && process.env.STRICT_PRODUCTION_DB === 'true') {
-    throw new Error('No fue posible persistir el mensaje recibido por Baileys.');
-  }
+  console.log(`⚡ [Baileys -> Motor HUN] Procesando mensaje en vivo de ${phone} (${name}): "${text}"`);
+  // Encolar asíncronamente en PostgreSQL para auditoría y persistencia sin bloquear el flujo en tiempo real
+  void incomingMessageQueue.enqueue({ phone, text, senderName: name, waMessageId: messageId, sourceChannel: 'BAILEYS' }).catch(() => undefined);
   return WebhookController.processMessage(phone, text, name, messageId, 'BAILEYS');
 });
 

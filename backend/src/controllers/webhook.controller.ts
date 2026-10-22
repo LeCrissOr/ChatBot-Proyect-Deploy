@@ -462,9 +462,13 @@ export class WebhookController {
 
     // Si la respuesta incluye un sticker/media (ej. Nicol al saludar), enviarlo físicamente por WhatsApp
     if (botResult.mediaUrl && sourceChannel !== 'SIMULATOR') {
-      console.log(`📲 [WhatsApp Físico] Despachando sticker oficial a ${recipientPhone}`);
-      await WhatsAppService.sendStickerMessage(recipientPhone, botResult.mediaUrl, sourceChannel);
-      await new Promise((resolve) => setTimeout(resolve, 350));
+      try {
+        console.log(`📲 [WhatsApp Físico] Despachando sticker oficial a ${recipientPhone}`);
+        await WhatsAppService.sendStickerMessage(recipientPhone, botResult.mediaUrl, sourceChannel);
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      } catch (stickerErr: any) {
+        console.warn(`⚠️ [WhatsApp Físico] No se pudo enviar el sticker (${stickerErr?.message || stickerErr}), continuando con mensajes de texto...`);
+      }
     }
 
     // Enviar respuestas de texto del bot al paciente y guardar en el historial
