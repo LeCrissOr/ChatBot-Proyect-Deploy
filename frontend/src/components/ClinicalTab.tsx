@@ -15,11 +15,14 @@ import {
   User,
   GraduationCap,
   Building2,
+  ClipboardList,
 } from 'lucide-react';
 import {
   Appointment,
+  Contact,
   SurgicalQuote,
   fetchAppointments,
+  fetchContacts,
   fetchQuotes,
   deleteAppointment,
   clearAppointments,
@@ -29,13 +32,16 @@ import {
   downloadAppointmentsExcel,
 } from '../lib/api';
 import { translatePaymentStatus, translateAppointmentStatus } from '../lib/translations';
+import { PatientFichaModal } from './PatientFichaModal';
 
 export const ClinicalTab: React.FC = () => {
   const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [contacts, setContacts] = useState<Contact[]>([]);
   const [quotes, setQuotes] = useState<SurgicalQuote[]>([]);
   const [activeSubTab, setActiveSubTab] = useState<'APPOINTMENTS' | 'QUOTES'>('APPOINTMENTS');
   const [doctorFilter, setDoctorFilter] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
+  const [selectedFichaPatient, setSelectedFichaPatient] = useState<Contact | null>(null);
 
   // Modales de eliminación
   const [deleteTarget, setDeleteTarget] = useState<{
@@ -79,6 +85,7 @@ export const ClinicalTab: React.FC = () => {
 
   const loadData = () => {
     fetchAppointments().then(setAppointments).catch(console.error);
+    fetchContacts().then(setContacts).catch(console.error);
     fetchQuotes().then(setQuotes).catch(console.error);
   };
 
@@ -87,6 +94,10 @@ export const ClinicalTab: React.FC = () => {
 
     socket.on('appointments_updated', (updatedApts: Appointment[]) => {
       setAppointments(updatedApts);
+    });
+
+    socket.on('contacts_updated', (updatedContacts: Contact[]) => {
+      setContacts(updatedContacts);
     });
 
     socket.on('quotes_updated', (updatedQuotes: SurgicalQuote[]) => {
@@ -99,10 +110,31 @@ export const ClinicalTab: React.FC = () => {
 
     return () => {
       socket.off('appointments_updated');
+      socket.off('contacts_updated');
       socket.off('quotes_updated');
       socket.off('conversation_updated');
     };
   }, []);
+
+  const openPatientFichaFromAppointment = (apt: Appointment) => {
+    const cleanAptPhone = (apt.contactPhone || '').replace(/[^0-9]/g, '');
+    const found = contacts.find(
+      (c) =>
+        c.id === apt.contactId ||
+        (cleanAptPhone && c.phone && c.phone.replace(/[^0-9]/g, '').includes(cleanAptPhone))
+    );
+    if (found) {
+      setSelectedFichaPatient(found);
+    } else {
+      setSelectedFichaPatient({
+        id: apt.contactId || apt.id,
+        phone: apt.contactPhone || '',
+        name: apt.contactName || 'Paciente Particular',
+        userTypeCode: apt.userTypeCode,
+        userTypeName: apt.userTypeName,
+      });
+    }
+  };
 
   const handleDeleteSingle = async () => {
     if (!deleteTarget) return;
@@ -267,7 +299,13 @@ export const ClinicalTab: React.FC = () => {
                 {filteredAppointments.map((apt) => (
                   <tr key={apt.id} className="hover:bg-slate-50/80">
                     <td className="p-3 font-semibold text-slate-900">
-                      <div>{apt.contactName || 'Paciente Particular'}</div>
+                      <button
+                        onClick={() => openPatientFichaFromAppointment(apt)}
+                        className="text-left hover:text-blue-600 hover:underline transition cursor-pointer font-bold"
+                        title="Ver Ficha de Datos del Paciente"
+                      >
+                        {apt.contactName || 'Paciente Particular'}
+                      </button>
                       <div className="text-[10px] text-slate-400 flex items-center mt-0.5">
                         <Phone className="w-3 h-3 mr-1" /> +{apt.contactPhone}
                       </div>
@@ -322,39 +360,63 @@ export const ClinicalTab: React.FC = () => {
                       )}
                     </td>
                     <td className="p-3">
-                      {apt.status === 'CANCELLED_BY_USER' || apt.status === 'CANCELLED' ? (
-                        <span className="inline-flex items-center text-red-700 bg-red-100 border border-red-300 px-2.5 py-1 rounded-lg text-xs font-bold shadow-xs">
-                          <XCircle className="w-3.5 h-3.5 mr-1 text-red-600" /> Cancelado por Usuario
-                        </span>
-                      ) : apt.status === 'RESCHEDULED' ? (
-                        <span className="inline-flex items-center text-blue-700 bg-blue-100 border border-blue-300 px-2.5 py-1 rounded-lg text-xs font-bold shadow-xs">
-                          Reagendada
-                        </span>
-                      ) : apt.status === 'PENDING_PAYMENT' || apt.status === 'PENDING' ? (
-                        <span className="inline-flex items-center text-amber-700 bg-amber-100 border border-amber-300 px-2.5 py-1 rounded-lg text-xs font-bold shadow-xs">
-                          Pendiente de Pago
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg text-xs font-bold">
-                          <CheckCircle className="w-3.5 h-3.5 mr-1 text-emerald-600" /> Confirmada
-                        </span>
-                      )}
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {apt.status === 'CANCELLED_BY_USER' || apt.status === 'CANCELLED' ? (
+                            <span className="inline-flex items-center text-red-700 bg-red-100 border border-red-300 px-2.5 py-1 rounded-lg text-xs font-bold shadow-xs">
+                              <XCircle className="w-3.5 h-3.5 mr-1 text-red-600" /> Cancelado por Usuario
+                            </span>
+                          ) : apt.status === 'RESCHEDULED' || apt.wasRescheduled ? (
+                            <span className="inline-flex items-center text-blue-700 bg-blue-100 border border-blue-300 px-2.5 py-1 rounded-lg text-xs font-bold shadow-xs">
+                              <RefreshCw className="w-3.5 h-3.5 mr-1 text-blue-600" /> Reagendada
+                            </span>
+                          ) : apt.status === 'PENDING_PAYMENT' || apt.status === 'PENDING' ? (
+                            <span className="inline-flex items-center text-amber-700 bg-amber-100 border border-amber-300 px-2.5 py-1 rounded-lg text-xs font-bold shadow-xs">
+                              Pendiente de Pago
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg text-xs font-bold">
+                              <CheckCircle className="w-3.5 h-3.5 mr-1 text-emerald-600" /> Confirmada
+                            </span>
+                          )}
+                        </div>
+                        {(apt.status === 'CANCELLED_BY_USER' || apt.status === 'CANCELLED') && apt.cancellationReason && (
+                          <div className="text-[11px] text-rose-700 font-medium">
+                            Motivo: {apt.cancellationReason}
+                          </div>
+                        )}
+                        {(apt.status === 'RESCHEDULED' || apt.wasRescheduled) && apt.rescheduleReason && (
+                          <div className="text-[11px] text-blue-700 font-medium">
+                            Motivo: {apt.rescheduleReason}
+                          </div>
+                        )}
+                      </div>
                     </td>
                     <td className="p-3 text-right">
-                      <button
-                        onClick={() =>
-                          setDeleteTarget({
-                            type: 'APPOINTMENT',
-                            id: apt.id,
-                            name: apt.contactName || 'Paciente Particular',
-                            details: `${apt.specialty} · ${apt.doctorName}`,
-                          })
-                        }
-                        className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition cursor-pointer"
-                        title="Eliminar cita"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <div className="inline-flex items-center justify-end gap-1.5">
+                        <button
+                          onClick={() => openPatientFichaFromAppointment(apt)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] font-bold text-blue-700 hover:bg-blue-100 transition cursor-pointer"
+                          title="Ver Ficha de Datos del Paciente"
+                        >
+                          <ClipboardList className="w-3.5 h-3.5" />
+                          <span>Ficha</span>
+                        </button>
+                        <button
+                          onClick={() =>
+                            setDeleteTarget({
+                              type: 'APPOINTMENT',
+                              id: apt.id,
+                              name: apt.contactName || 'Paciente Particular',
+                              details: `${apt.specialty} · ${apt.doctorName}`,
+                            })
+                          }
+                          className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition cursor-pointer"
+                          title="Eliminar cita"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -653,6 +715,17 @@ export const ClinicalTab: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Modal de Ficha de Datos del Paciente */}
+      <PatientFichaModal
+        patient={
+          selectedFichaPatient
+            ? contacts.find((c) => c.id === selectedFichaPatient.id) || selectedFichaPatient
+            : null
+        }
+        appointments={appointments}
+        onClose={() => setSelectedFichaPatient(null)}
+      />
     </div>
   );
 };

@@ -144,5 +144,6 @@ export interface BotReplyResult {
     appointmentId: string;
     newDateTime: Date;
     newDoctorName?: string;
+    reason?: string;
   };
 }

@@ -16,8 +16,11 @@ import {
   FileText,
   GraduationCap,
   Building2,
+  ClipboardList,
+  XCircle,
 } from 'lucide-react';
 import { Contact, Appointment, fetchContacts, fetchAppointments, deleteContact, deleteContacts, socket } from '../lib/api';
+import { PatientFichaModal } from './PatientFichaModal';
 
 export const PatientsTab: React.FC = () => {
   const [patients, setPatients] = useState<Contact[]>([]);
@@ -28,6 +31,7 @@ export const PatientsTab: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [singleDeleteTarget, setSingleDeleteTarget] = useState<Contact | null>(null);
   const [showBatchDeleteModal, setShowBatchDeleteModal] = useState(false);
+  const [selectedFichaPatient, setSelectedFichaPatient] = useState<Contact | null>(null);
 
   const loadData = () => {
     Promise.all([fetchContacts(), fetchAppointments()])
@@ -370,8 +374,14 @@ export const PatientsTab: React.FC = () => {
 
                     {/* Nombre y Estado */}
                     <td className="px-5 py-4 font-semibold text-slate-900">
-                      <div className="flex items-center gap-2">
-                        <span>{patient.name || 'Pendiente de registro'}</span>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                          onClick={() => setSelectedFichaPatient(patient)}
+                          className="text-left hover:text-blue-600 hover:underline transition cursor-pointer font-bold"
+                          title="Ver Ficha Completa del Paciente"
+                        >
+                          {patient.name || 'Pendiente de registro'}
+                        </button>
                         {patient.isInternational && (
                           <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold text-sky-800">
                             Internacional
@@ -435,42 +445,70 @@ export const PatientsTab: React.FC = () => {
                       </div>
                     </td>
 
-                    {/* Estado de Cita Médica */}
+                    {/* Estado de Cita Médica, Cancelaciones y Reagendamiento */}
                     <td className="px-5 py-4 text-slate-700">
                       {(() => {
                         const cat = getPatientAppointmentCategory(patient);
-                        if (cat === 'CONFIRMED') {
-                          return (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                              🟢 Cita Confirmada
-                            </span>
-                          );
-                        }
-                        if (cat === 'PENDING') {
-                          return (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                              ⏳ Pendiente de Pago
-                            </span>
-                          );
-                        }
-                        if (cat === 'RESCHEDULED') {
-                          return (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
-                              🔄 Cita Reagendada
-                            </span>
-                          );
-                        }
-                        if (cat === 'CANCELLED') {
-                          return (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
-                              ❌ Cita Cancelada
-                            </span>
-                          );
-                        }
+                        const cancelCount = patient.cancellationCount || 0;
+                        const lastCancelReason =
+                          patient.cancellationReasons && patient.cancellationReasons.length > 0
+                            ? patient.cancellationReasons[0].reason
+                            : undefined;
+                        const wasRescheduled = Boolean(patient.wasRescheduled || (patient.rescheduleCount && patient.rescheduleCount > 0));
+                        const lastRescheduleReason =
+                          patient.rescheduleReasons && patient.rescheduleReasons.length > 0
+                            ? patient.rescheduleReasons[0].reason
+                            : undefined;
+
                         return (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200">
-                            ⚪ Sin Cita
-                          </span>
+                          <div className="space-y-1.5">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {cat === 'CONFIRMED' ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                  🟢 Cita Confirmada
+                                </span>
+                              ) : cat === 'PENDING' ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                                  ⏳ Pendiente de Pago
+                                </span>
+                              ) : cat === 'RESCHEDULED' ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
+                                  🔄 Cita Reagendada
+                                </span>
+                              ) : cat === 'CANCELLED' ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                                  ❌ Cita Cancelada
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200">
+                                  ⚪ Sin Cita
+                                </span>
+                              )}
+
+                              {wasRescheduled && cat !== 'RESCHEDULED' && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                                  <RefreshCw className="w-2.5 h-2.5" /> Reagendó ({patient.rescheduleCount || 1})
+                                </span>
+                              )}
+
+                              {cancelCount > 0 && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                                  <XCircle className="w-2.5 h-2.5" /> {cancelCount} {cancelCount === 1 ? 'Cancelación' : 'Cancelaciones'}
+                                </span>
+                              )}
+                            </div>
+
+                            {lastRescheduleReason && (
+                              <div className="text-[11px] text-blue-700 font-medium truncate max-w-[230px]" title={`Motivo reprogramación: ${lastRescheduleReason}`}>
+                                🔄 Motivo: {lastRescheduleReason}
+                              </div>
+                            )}
+                            {lastCancelReason && (
+                              <div className="text-[11px] text-rose-700 font-medium truncate max-w-[230px]" title={`Motivo cancelación: ${lastCancelReason}`}>
+                                ❌ Motivo: {lastCancelReason}
+                              </div>
+                            )}
+                          </div>
                         );
                       })()}
                     </td>
@@ -508,13 +546,23 @@ export const PatientsTab: React.FC = () => {
 
                     {/* Acciones Individuales */}
                     <td className="px-5 py-4 text-right">
-                      <button
-                        onClick={() => setSingleDeleteTarget(patient)}
-                        className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 transition cursor-pointer"
-                        title="Eliminar este paciente"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      <div className="inline-flex items-center justify-end gap-1.5">
+                        <button
+                          onClick={() => setSelectedFichaPatient(patient)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-bold text-blue-700 hover:bg-blue-100 transition cursor-pointer"
+                          title="Ver Ficha de Datos del Paciente, cancelaciones y motivos"
+                        >
+                          <ClipboardList className="h-3.5 w-3.5" />
+                          <span>Ver Ficha</span>
+                        </button>
+                        <button
+                          onClick={() => setSingleDeleteTarget(patient)}
+                          className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 transition cursor-pointer"
+                          title="Eliminar este paciente"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -627,6 +675,17 @@ export const PatientsTab: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Modal de Ficha Completa del Paciente */}
+      <PatientFichaModal
+        patient={
+          selectedFichaPatient
+            ? patients.find((p) => p.id === selectedFichaPatient.id) || selectedFichaPatient
+            : null
+        }
+        appointments={appointments}
+        onClose={() => setSelectedFichaPatient(null)}
+      />
     </section>
   );
 };

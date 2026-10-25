@@ -19,10 +19,15 @@ import {
   Smile,
   Paperclip,
   AlertCircle,
+  ClipboardList,
 } from 'lucide-react';
 import {
+  Appointment,
+  Contact,
   Conversation,
   Message,
+  fetchAppointments,
+  fetchContacts,
   fetchConversations,
   fetchMessages,
   sendAgentMessage,
@@ -36,6 +41,7 @@ import {
   deleteConversation,
   socket,
 } from '../lib/api';
+import { PatientFichaModal } from './PatientFichaModal';
 
 const DeliveryStatus: React.FC<{ status: string; error?: string }> = ({ status, error }) => {
   if (status === 'pending') return <span title="Enviando"><Clock className="w-3.5 h-3.5 text-slate-400" /></span>;
@@ -59,6 +65,9 @@ export const LiveChatTab: React.FC = () => {
   const [isClearing, setIsClearing] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showActionsMenu, setShowActionsMenu] = useState(false);
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [showPatientFicha, setShowPatientFicha] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const actionsMenuRef = useRef<HTMLDivElement>(null);
 
@@ -76,8 +85,14 @@ export const LiveChatTab: React.FC = () => {
   // Carga inicial
   const loadConversations = async () => {
     try {
-      const data = await fetchConversations();
+      const [data, contactsData, aptsData] = await Promise.all([
+        fetchConversations(),
+        fetchContacts().catch(() => []),
+        fetchAppointments().catch(() => []),
+      ]);
       setConversations(data);
+      setContacts(contactsData);
+      setAppointments(aptsData);
       if (!selectedConvId && data.length > 0) {
         setSelectedConvId(data[0].id);
       }
@@ -423,6 +438,15 @@ export const LiveChatTab: React.FC = () => {
 
               {/* Barra de Control Estilizada */}
               <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={() => setShowPatientFicha(true)}
+                  className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold rounded-full border border-blue-200 transition-all flex items-center gap-1.5 cursor-pointer"
+                  title="Ver Ficha de Datos del Paciente, cancelaciones y reprogramaciones"
+                >
+                  <ClipboardList className="w-3.5 h-3.5 text-blue-600" strokeWidth={1.75} />
+                  <span>Ficha Paciente</span>
+                </button>
+
                 {/* Botón de Intervención */}
                 {selectedConv.status === 'AGENT_TAKEN' ? (
                   <button
@@ -863,6 +887,17 @@ export const LiveChatTab: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Modal de Ficha Completa del Paciente desde Chat en Vivo */}
+      <PatientFichaModal
+        patient={
+          showPatientFicha && selectedConv?.contact
+            ? contacts.find((c) => c.id === selectedConv.contact?.id) || selectedConv.contact
+            : null
+        }
+        appointments={appointments}
+        onClose={() => setShowPatientFicha(false)}
+      />
     </div>
   );
 };

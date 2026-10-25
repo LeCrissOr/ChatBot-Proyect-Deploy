@@ -11,6 +11,16 @@ export interface UserTypeData {
   active?: boolean;
 }
 
+export interface AppointmentHistoryEntry {
+  id: string;
+  appointmentId: string;
+  previousStatus?: string | null;
+  newStatus: string;
+  changedBy?: string | null;
+  note?: string | null;
+  createdAt: Date;
+}
+
 export interface ContactData {
   id: string;
   phone: string;
@@ -27,6 +37,23 @@ export interface ContactData {
   userType?: UserTypeData;
   userTypeCode?: string;
   userTypeName?: string;
+  cancellationCount?: number;
+  cancellationReasons?: Array<{
+    appointmentId: string;
+    specialty: string;
+    doctorName: string;
+    reason: string;
+    date: Date;
+  }>;
+  rescheduleCount?: number;
+  wasRescheduled?: boolean;
+  rescheduleReasons?: Array<{
+    appointmentId: string;
+    specialty: string;
+    doctorName: string;
+    reason: string;
+    date: Date;
+  }>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -80,6 +107,11 @@ export interface AppointmentData {
   referralCode?: string;
   referralModel?: string;
   status: string;
+  wasRescheduled?: boolean;
+  rescheduleCount?: number;
+  rescheduleReason?: string;
+  cancellationReason?: string;
+  statusHistory?: AppointmentHistoryEntry[];
   createdAt: Date;
 }
 
@@ -136,6 +168,7 @@ class DataStore {
   private conversations: Map<string, ConversationData> = new Map();
   private messages: MessageData[] = [];
   private appointments: AppointmentData[] = [];
+  private statusHistory: AppointmentHistoryEntry[] = [];
   private quotes: SurgicalQuoteData[] = [];
   private tickets: SupportTicketData[] = [];
   private npsSurveys: NpsSurveyData[] = [];
@@ -291,6 +324,8 @@ class DataStore {
     this.tickets = tickets.map((item) => ({ ...item, contactName: item.contact.name || undefined, contactPhone: item.contact.phone })) as SupportTicketData[];
     const surveys = await this.prisma.npsSurvey.findMany({ orderBy: { createdAt: 'desc' } });
     this.npsSurveys = surveys as NpsSurveyData[];
+    const history = await this.prisma.appointmentStatusHistory.findMany({ orderBy: { createdAt: 'desc' } }).catch(() => []);
+    this.statusHistory = history as AppointmentHistoryEntry[];
   }
 
   private async persistSeedData() {
@@ -1130,21 +1165,66 @@ class DataStore {
 
   public getConfirmedAppointmentsByContact(contactId: string): AppointmentData[] {
     return this.appointments.filter(
-      (a) => a.contactId === contactId && (a.status === 'CONFIRMED' || a.status === 'HELD' || a.status === 'PENDING')
+      (a) =>
+        a.contactId === contactId &&
+        (a.status === 'CONFIRMED' || a.status === 'RESCHEDULED' || a.status === 'HELD' || a.status === 'PENDING')
     );
   }
 
-  public async updateAppointmentSlot(id: string, dateTime: Date, doctorName?: string): Promise<AppointmentData | undefined> {
+  public async updateAppointmentSlot(
+    id: string,
+    dateTime: Date,
+    doctorName?: string,
+    reason?: string
+  ): Promise<AppointmentData | undefined> {
     const apt = this.appointments.find((a) => a.id === id);
     if (apt) {
+      const previousStatus = apt.status;
       apt.dateTime = dateTime;
       if (doctorName) apt.doctorName = doctorName;
-      apt.status = 'CONFIRMED';
+      apt.status = 'RESCHEDULED';
+      apt.wasRescheduled = true;
+      if (reason) {
+        apt.rescheduleReason = reason;
+        apt.paymentStatus = `Reprogramado: ${reason}`;
+      }
+      const historyEntry: AppointmentHistoryEntry = {
+        id: `hist-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        appointmentId: id,
+        previousStatus,
+        newStatus: 'RESCHEDULED',
+        changedBy: 'PATIENT_BOT',
+        note: reason ? `Motivo de reprogramación: ${reason}` : 'Reprogramada por el paciente en WhatsApp',
+        createdAt: new Date(),
+      };
+      this.statusHistory.unshift(historyEntry);
+
       if (this.isPrismaConnected && this.prisma) {
-        await this.prisma.appointment.update({
-          where: { id },
-          data: { dateTime, ...(doctorName ? { doctorName } : {}), status: 'CONFIRMED' }
-        }).catch((err) => console.error('Error reprogramando cita en PostgreSQL:', err));
+        await this.prisma.appointment
+          .update({
+            where: { id },
+            data: {
+              dateTime,
+              ...(doctorName ? { doctorName } : {}),
+              status: 'RESCHEDULED',
+              ...(reason ? { paymentStatus: `Reprogramado: ${reason}` } : {}),
+            },
+          })
+          .catch((err) => console.error('Error reprogramando cita en PostgreSQL:', err));
+
+        await this.prisma.appointmentStatusHistory
+          .create({
+            data: {
+              id: historyEntry.id,
+              appointmentId: id,
+              previousStatus,
+              newStatus: 'RESCHEDULED',
+              changedBy: 'PATIENT_BOT',
+              note: historyEntry.note,
+              createdAt: historyEntry.createdAt,
+            },
+          })
+          .catch(() => null);
       }
     }
     return apt;
@@ -1153,16 +1233,46 @@ class DataStore {
   public async cancelAppointment(id: string, reason?: string): Promise<AppointmentData | undefined> {
     const apt = this.appointments.find((a) => a.id === id);
     if (apt) {
+      const previousStatus = apt.status;
       apt.status = 'CANCELLED_BY_USER';
+      apt.cancellationReason = reason || 'Cancelado por Usuario';
       apt.paymentStatus = reason ? `Cancelado: ${reason}` : 'Cancelado por Usuario';
+
+      const historyEntry: AppointmentHistoryEntry = {
+        id: `hist-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        appointmentId: id,
+        previousStatus,
+        newStatus: 'CANCELLED_BY_USER',
+        changedBy: 'PATIENT_BOT',
+        note: reason ? `Motivo de cancelación: ${reason}` : 'Cancelada por el paciente en WhatsApp',
+        createdAt: new Date(),
+      };
+      this.statusHistory.unshift(historyEntry);
+
       if (this.isPrismaConnected && this.prisma) {
-        await this.prisma.appointment.update({
-          where: { id },
-          data: {
-            status: 'CANCELLED_BY_USER',
-            paymentStatus: reason ? `Cancelado: ${reason}` : 'Cancelado por Usuario'
-          }
-        }).catch((err) => console.error('Error cancelando cita en PostgreSQL:', err));
+        await this.prisma.appointment
+          .update({
+            where: { id },
+            data: {
+              status: 'CANCELLED_BY_USER',
+              paymentStatus: reason ? `Cancelado: ${reason}` : 'Cancelado por Usuario',
+            },
+          })
+          .catch((err) => console.error('Error cancelando cita en PostgreSQL:', err));
+
+        await this.prisma.appointmentStatusHistory
+          .create({
+            data: {
+              id: historyEntry.id,
+              appointmentId: id,
+              previousStatus,
+              newStatus: 'CANCELLED_BY_USER',
+              changedBy: 'PATIENT_BOT',
+              note: historyEntry.note,
+              createdAt: historyEntry.createdAt,
+            },
+          })
+          .catch(() => null);
       }
     }
     return apt;
@@ -1341,8 +1451,125 @@ class DataStore {
     return Array.from(contactMap.values());
   }
 
+  private enrichAppointment(apt: AppointmentData): AppointmentData {
+    const aptHistory = this.statusHistory.filter((h) => h.appointmentId === apt.id);
+    const rescheduleEvents = aptHistory.filter((h) => (h.newStatus || '').toUpperCase() === 'RESCHEDULED');
+    const cancelEvents = aptHistory.filter((h) =>
+      ['CANCELLED', 'CANCELLED_BY_USER'].includes((h.newStatus || '').toUpperCase())
+    );
+
+    const paymentStr = apt.paymentStatus || '';
+    const reasonFromPaymentReschedule = paymentStr.startsWith('Reprogramado:')
+      ? paymentStr.replace(/^Reprogramado:\s*/i, '').trim()
+      : undefined;
+    const reasonFromPaymentCancel = paymentStr.startsWith('Cancelado:')
+      ? paymentStr.replace(/^Cancelado:\s*/i, '').trim()
+      : undefined;
+
+    const latestRescheduleNote = rescheduleEvents[0]?.note
+      ? rescheduleEvents[0].note.replace(/^Motivo de reprogramación:\s*/i, '').trim()
+      : undefined;
+    const latestCancelNote = cancelEvents[0]?.note
+      ? cancelEvents[0].note.replace(/^Motivo de cancelación:\s*/i, '').trim()
+      : undefined;
+
+    const wasRescheduled =
+      Boolean(apt.wasRescheduled) ||
+      (apt.status || '').toUpperCase() === 'RESCHEDULED' ||
+      rescheduleEvents.length > 0 ||
+      Boolean(reasonFromPaymentReschedule);
+
+    const rescheduleCount = Math.max(rescheduleEvents.length, wasRescheduled ? 1 : 0);
+    const rescheduleReason = apt.rescheduleReason || latestRescheduleNote || reasonFromPaymentReschedule;
+    const cancellationReason =
+      apt.cancellationReason ||
+      latestCancelNote ||
+      reasonFromPaymentCancel ||
+      (['CANCELLED', 'CANCELLED_BY_USER'].includes((apt.status || '').toUpperCase()) ? 'Cancelado por Usuario' : undefined);
+
+    return {
+      ...apt,
+      wasRescheduled,
+      rescheduleCount,
+      rescheduleReason,
+      cancellationReason,
+      statusHistory: aptHistory,
+    };
+  }
+
   public getAllContacts(): ContactData[] {
-    return Array.from(this.contacts.values()).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+    const allEnrichedApts = this.getAllAppointments();
+    return Array.from(this.contacts.values())
+      .map((contact) => {
+        const cleanContactPhone = (contact.phone || '').replace(/[^0-9]/g, '');
+        const patientApts = allEnrichedApts.filter(
+          (a) =>
+            a.contactId === contact.id ||
+            (cleanContactPhone &&
+              a.contactPhone &&
+              a.contactPhone.replace(/[^0-9]/g, '').includes(cleanContactPhone))
+        );
+
+        const cancellationReasons: NonNullable<ContactData['cancellationReasons']> = [];
+        const rescheduleReasons: NonNullable<ContactData['rescheduleReasons']> = [];
+
+        for (const apt of patientApts) {
+          const hist = apt.statusHistory || [];
+          const cancelHist = hist.filter((h) =>
+            ['CANCELLED', 'CANCELLED_BY_USER'].includes((h.newStatus || '').toUpperCase())
+          );
+          if (cancelHist.length > 0) {
+            for (const ch of cancelHist) {
+              cancellationReasons.push({
+                appointmentId: apt.id,
+                specialty: apt.specialty,
+                doctorName: apt.doctorName,
+                reason: (ch.note || '').replace(/^Motivo de cancelación:\s*/i, '').trim() || apt.cancellationReason || 'No especificado',
+                date: ch.createdAt,
+              });
+            }
+          } else if (['CANCELLED', 'CANCELLED_BY_USER'].includes((apt.status || '').toUpperCase())) {
+            cancellationReasons.push({
+              appointmentId: apt.id,
+              specialty: apt.specialty,
+              doctorName: apt.doctorName,
+              reason: apt.cancellationReason || 'Cancelado por Usuario',
+              date: apt.createdAt,
+            });
+          }
+
+          const reschedHist = hist.filter((h) => (h.newStatus || '').toUpperCase() === 'RESCHEDULED');
+          if (reschedHist.length > 0) {
+            for (const rh of reschedHist) {
+              rescheduleReasons.push({
+                appointmentId: apt.id,
+                specialty: apt.specialty,
+                doctorName: apt.doctorName,
+                reason: (rh.note || '').replace(/^Motivo de reprogramación:\s*/i, '').trim() || apt.rescheduleReason || 'Reprogramada por el paciente',
+                date: rh.createdAt,
+              });
+            }
+          } else if (apt.wasRescheduled || (apt.status || '').toUpperCase() === 'RESCHEDULED') {
+            rescheduleReasons.push({
+              appointmentId: apt.id,
+              specialty: apt.specialty,
+              doctorName: apt.doctorName,
+              reason: apt.rescheduleReason || 'Reprogramada por el paciente',
+              date: apt.dateTime,
+            });
+          }
+        }
+
+        return {
+          ...contact,
+          cancellationCount: cancellationReasons.length,
+          cancellationReasons,
+          rescheduleCount: rescheduleReasons.length,
+          wasRescheduled: rescheduleReasons.length > 0,
+          rescheduleReasons,
+        };
+      })
+      .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
   }
 
   public getConversationById(id: string): ConversationData | undefined {
@@ -1359,7 +1586,7 @@ class DataStore {
   }
 
   public getAllAppointments(): AppointmentData[] {
-    return this.appointments;
+    return this.appointments.map((apt) => this.enrichAppointment(apt));
   }
 
   public getAllQuotes(): SurgicalQuoteData[] {

@@ -125,8 +125,8 @@ export class DecisionTreeService {
       return this.handlePostConfirmationOptions(text, lower, data, patientSavedName);
     }
 
-    // Comandos universales de navegación
-    if (lower === 'menu' || lower === 'inicio' || lower === 'cancelar') {
+    // Comandos universales de navegación (en CANCELAR_CITA la palabra "cancelar" forma parte de la confirmación)
+    if (lower === 'menu' || lower === 'inicio' || (lower === 'cancelar' && currentFlow !== 'CANCELAR_CITA')) {
       return this.getRootMenu();
     }
 
@@ -158,7 +158,7 @@ export class DecisionTreeService {
         break;
 
       case 'CANCELAR_CITA':
-        result = this.handleCancelarCita(text, lower, currentStep, data, patientSavedName);
+        result = await this.handleCancelarCita(text, lower, currentStep, data, patientSavedName);
         break;
 
       case 'POST_CONSULTA':
@@ -2828,7 +2828,7 @@ export class DecisionTreeService {
         lower.includes('cambiar cita')
       ) {
         const apts = (data.confirmedAppointments || []).filter(
-          (a: any) => a.status === 'CONFIRMED' || a.status === 'HELD' || a.status === 'PENDING'
+          (a: any) => a.status === 'CONFIRMED' || a.status === 'RESCHEDULED' || a.status === 'HELD' || a.status === 'PENDING'
         );
         if (apts.length === 0) {
           return {
@@ -2868,7 +2868,7 @@ export class DecisionTreeService {
         lower.includes('anular')
       ) {
         const apts = (data.confirmedAppointments || []).filter(
-          (a: any) => a.status === 'CONFIRMED' || a.status === 'HELD' || a.status === 'PENDING'
+          (a: any) => a.status === 'CONFIRMED' || a.status === 'RESCHEDULED' || a.status === 'HELD' || a.status === 'PENDING'
         );
         if (apts.length === 0) {
           return {
@@ -3117,6 +3117,212 @@ export class DecisionTreeService {
   }
 
   /**
+   * Construye el mensaje y payload interactivo con los 5 motivos de reprogramación o cancelación
+   */
+  private static getModificationReasonPrompt(
+    actionLabel: 'reprogramar' | 'cancelar',
+    nextFlow: ConversationFlow,
+    nextStep: string,
+    data: FlowStateData,
+    introMessage?: string,
+    isRetry: boolean = false
+  ): BotReplyResult {
+    const prefix = isRetry
+      ? '⚠️ Por favor responde con el número de una de las 5 opciones:\n\n'
+      : introMessage
+      ? `${introMessage}\n\n`
+      : '';
+
+    const questionText = `${prefix}¿Cuál es el motivo por el que deseas ${actionLabel} tu cita médica?\n\n1️⃣ Conflictos de tiempo y trabajo\n2️⃣ Problemas de movilidad o transporte\n3️⃣ Estado de salud actual\n4️⃣ Motivos económicos o administrativos\n5️⃣ Otro motivo\n\n(Puedes pulsar el botón de opciones o responder con el número de tu opción)`;
+
+    return {
+      replyMessages: [questionText],
+      interactivePayload: {
+        type: 'list',
+        title: actionLabel === 'reprogramar' ? 'Motivo de Reprogramación' : 'Motivo de Cancelación',
+        buttonText: '📋 Seleccionar Motivo',
+        options: [
+          { id: '1', title: '1. Tiempo y trabajo', description: 'Conflictos de tiempo, horarios laborales o personales' },
+          { id: '2', title: '2. Movilidad o transporte', description: 'Problemas de desplazamiento o transporte' },
+          { id: '3', title: '3. Estado de salud', description: 'Estado de salud actual, mejoría o urgencia médica' },
+          { id: '4', title: '4. Económico / Admin', description: 'Motivos económicos, autorización o administrativos' },
+          { id: '5', title: '5. Otro motivo', description: 'Especificar otro motivo diferente' },
+        ],
+      },
+      nextFlow,
+      nextStep,
+      updatedData: data,
+    };
+  }
+
+  /**
+   * Interpreta la selección de uno de los 5 motivos de reprogramación o cancelación
+   */
+  private static parseModificationReason(
+    text: string,
+    lower: string
+  ): { type: 'SELECTED'; reason: string } | { type: 'OTHER' } | { type: 'INVALID' } {
+    const cleanNum = text.replace(/\D/g, '');
+    if (
+      cleanNum === '1' ||
+      lower === '1' ||
+      lower.includes('tiempo') ||
+      lower.includes('trabajo') ||
+      lower.includes('conflicto') ||
+      lower.includes('laboral')
+    ) {
+      return { type: 'SELECTED', reason: 'Conflictos de tiempo y trabajo' };
+    }
+    if (
+      cleanNum === '2' ||
+      lower === '2' ||
+      lower.includes('movilidad') ||
+      lower.includes('transporte') ||
+      lower.includes('desplazamiento')
+    ) {
+      return { type: 'SELECTED', reason: 'Problemas de movilidad o transporte' };
+    }
+    if (
+      cleanNum === '3' ||
+      lower === '3' ||
+      lower.includes('salud') ||
+      lower.includes('mejoria') ||
+      lower.includes('mejoría')
+    ) {
+      return { type: 'SELECTED', reason: 'Estado de salud actual' };
+    }
+    if (
+      cleanNum === '4' ||
+      lower === '4' ||
+      lower.includes('economico') ||
+      lower.includes('económico') ||
+      lower.includes('administrativo') ||
+      lower.includes('dinero')
+    ) {
+      return { type: 'SELECTED', reason: 'Motivos económicos o administrativos' };
+    }
+    if (
+      cleanNum === '5' ||
+      lower === '5' ||
+      lower.includes('otro')
+    ) {
+      return { type: 'OTHER' };
+    }
+    return { type: 'INVALID' };
+  }
+
+  /**
+   * Consulta los cupos disponibles y construye el paso SELECT_NEW_SLOT de reprogramación
+   */
+  private static async buildRescheduleSlotsPrompt(
+    selectedApt: any,
+    data: FlowStateData,
+    introPrefix: string = ''
+  ): Promise<BotReplyResult> {
+    data.selectedAppointmentForReschedule = selectedApt;
+
+    let dynamicSlots = await AgendaService.getAvailableSlotsForDoctor(
+      selectedApt.specialty,
+      selectedApt.doctorName,
+      undefined,
+      3
+    );
+
+    if (dynamicSlots.length === 0) {
+      dynamicSlots = await AgendaService.getAvailableSlotsForSpecialty(
+        selectedApt.specialty,
+        undefined,
+        3
+      );
+    }
+
+    if (dynamicSlots.length === 0) {
+      return {
+        replyMessages: [
+          `No encontramos cupos disponibles inmediatos en agenda médica para reprogramar tu cita de ${selectedApt.specialty} con ${selectedApt.doctorName}.`,
+          '¿Deseas que un auxiliar valide opciones de sobrecupo o volver al menú principal?\n\n1️⃣ Ir al menú principal',
+        ],
+        nextFlow: 'IDLE',
+        nextStep: 'ROOT_MENU',
+        updatedData: data,
+        createTicket: {
+          type: 'RESCHEDULE_NO_SLOTS',
+          priority: 'HIGH',
+          description: `Sin cupos para reprogramar cita ${selectedApt.id} de ${selectedApt.specialty} con ${selectedApt.doctorName} (Motivo: ${data.rescheduleReason || data.cancellationReason || 'No especificado'})`,
+        },
+      };
+    }
+
+    data.dynamicSlots = dynamicSlots;
+    data.rescheduleAvailableSlots = dynamicSlots.map((s) => ({
+      id: s.id,
+      dateTime: s.dateTimeStr,
+      doctorName: s.doctorName,
+    }));
+
+    const slotsPrompt = dynamicSlots
+      .map((s, i) => `${i + 1}️⃣ ${s.dateTimeStr}`)
+      .join('\n');
+
+    return {
+      replyMessages: [
+        `${introPrefix}Horarios disponibles en agenda médica para reprogramar tu cita de *${selectedApt.specialty}*:\n\n${slotsPrompt}\n\nPor favor responde con el número del nuevo horario:`,
+      ],
+      interactivePayload: {
+        type: 'list',
+        title: `Horarios ${selectedApt.specialty}`.slice(0, 24),
+        buttonText: '🗓️ Elegir Nuevo Horario',
+        options: dynamicSlots.map((s, i) => ({
+          id: String(i + 1),
+          title: `Opción ${i + 1}`,
+          description: `${s.dateTimeStr} · ${s.doctorName}`.slice(0, 72),
+        })),
+      },
+      nextFlow: 'REPROGRAMAR_CITA',
+      nextStep: 'SELECT_NEW_SLOT',
+      updatedData: data,
+    };
+  }
+
+  /**
+   * Construye el paso de retención (ofrecer reprogramar antes de permitir cancelar)
+   */
+  private static buildCancelRetentionPrompt(
+    selectedApt: any,
+    reason: string,
+    data: FlowStateData,
+    isRetry: boolean = false
+  ): BotReplyResult {
+    const dt = selectedApt?.dateTime
+      ? new Date(selectedApt.dateTime).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })
+      : 'horario programado';
+    const specialty = selectedApt?.specialty || 'tu especialidad';
+
+    const prefix = isRetry
+      ? '⚠️ Por favor responde con un número del 1 al 3:\n\n'
+      : `Entendemos tu situación (*Motivo: ${reason}*). En el Hospital Universitario Nacional tu salud y la continuidad de tu tratamiento son nuestra prioridad 🏥.\n\nPara que no pierdas tu proceso médico en *${specialty}*, te sugerimos *reprogramar tu cita* en una nueva fecha y horario que se ajuste mejor a tu disponibilidad.\n\n`;
+
+    return {
+      replyMessages: [
+        `${prefix}¿Qué prefieres hacer?\n\n1️⃣ 🔄 Reprogramar mi cita en otra fecha/horario (Recomendado)\n2️⃣ ✅ Conservar mi cita actual (${dt})\n3️⃣ ❌ Continuar con la cancelación de la cita`,
+      ],
+      interactivePayload: {
+        type: 'list',
+        title: 'Alternativas para tu Cita',
+        buttonText: '📋 Elegir Opción',
+        options: [
+          { id: '1', title: '1. Reprogramar Cita', description: 'Recomendado: Cambiar fecha u hora de tu cita' },
+          { id: '2', title: '2. Conservar Cita Actual', description: `Mantener tu cita del ${dt}` },
+          { id: '3', title: '3. Cancelar Cita', description: 'Continuar con el proceso de cancelación' },
+        ],
+      },
+      nextFlow: 'CANCELAR_CITA',
+      nextStep: 'OFFER_RESCHEDULE',
+      updatedData: data,
+    };
+  }
+
+  /**
    * Flujo de Reprogramación de Cita Médica
    */
   private static async handleReprogramarCita(
@@ -3159,58 +3365,60 @@ export class DecisionTreeService {
         const selectedApt = apts[num - 1];
         data.selectedAppointmentForReschedule = selectedApt;
 
-        // Generar cupos disponibles reales según médico o especialidad
-        let dynamicSlots = await AgendaService.getAvailableSlotsForDoctor(
-          selectedApt.specialty,
-          selectedApt.doctorName,
-          undefined,
-          3
+        return this.getModificationReasonPrompt(
+          'reprogramar',
+          'REPROGRAMAR_CITA',
+          'RESCHEDULE_REASON',
+          data,
+          `Has seleccionado reprogramar tu cita de *${selectedApt.specialty}* con *${selectedApt.doctorName}*.`
         );
+      }
 
-        if (dynamicSlots.length === 0) {
-          dynamicSlots = await AgendaService.getAvailableSlotsForSpecialty(
-            selectedApt.specialty,
+      case 'RESCHEDULE_REASON': {
+        const parsed = this.parseModificationReason(text, lower);
+        if (parsed.type === 'INVALID') {
+          return this.getModificationReasonPrompt(
+            'reprogramar',
+            'REPROGRAMAR_CITA',
+            'RESCHEDULE_REASON',
+            data,
             undefined,
-            3
+            true
           );
         }
 
-        if (dynamicSlots.length === 0) {
+        if (parsed.type === 'OTHER') {
           return {
             replyMessages: [
-              `No encontramos cupos disponibles inmediatos en agenda médica para reprogramar tu cita de ${selectedApt.specialty} con ${selectedApt.doctorName}.`,
-              '¿Deseas que un auxiliar valide opciones de sobrecupo o volver al menú principal?\n\n1️⃣ Ir al menú principal',
+              'Por favor indícanos brevemente el motivo por el que deseas reprogramar tu cita médica:',
             ],
-            nextFlow: 'IDLE',
-            nextStep: 'ROOT_MENU',
+            nextFlow: 'REPROGRAMAR_CITA',
+            nextStep: 'RESCHEDULE_CUSTOM_REASON',
             updatedData: data,
-            createTicket: {
-              type: 'RESCHEDULE_NO_SLOTS',
-              priority: 'HIGH',
-              description: `Sin cupos para reprogramar cita ${selectedApt.id} de ${selectedApt.specialty} con ${selectedApt.doctorName}`,
-            },
           };
         }
 
-        data.dynamicSlots = dynamicSlots;
-        data.rescheduleAvailableSlots = dynamicSlots.map((s) => ({
-          id: s.id,
-          dateTime: s.dateTimeStr,
-          doctorName: s.doctorName,
-        }));
+        data.rescheduleReason = parsed.reason;
+        const selectedApt = data.selectedAppointmentForReschedule;
+        return this.buildRescheduleSlotsPrompt(selectedApt, data);
+      }
 
-        const slotsPrompt = dynamicSlots
-          .map((s, i) => `${i + 1}️⃣ ${s.dateTimeStr}`)
-          .join('\n');
+      case 'RESCHEDULE_CUSTOM_REASON': {
+        const customReason = text.trim();
+        if (customReason.length < 2) {
+          return {
+            replyMessages: [
+              '⚠️ Por favor indícanos brevemente el motivo por el que deseas reprogramar tu cita médica:',
+            ],
+            nextFlow: 'REPROGRAMAR_CITA',
+            nextStep: 'RESCHEDULE_CUSTOM_REASON',
+            updatedData: data,
+          };
+        }
 
-        return {
-          replyMessages: [
-            `Horarios disponibles en agenda médica para reprogramar tu cita de ${selectedApt.specialty}:\n\n${slotsPrompt}\n\nPor favor responde con el número del nuevo horario:`,
-          ],
-          nextFlow: 'REPROGRAMAR_CITA',
-          nextStep: 'SELECT_NEW_SLOT',
-          updatedData: data,
-        };
+        data.rescheduleReason = customReason;
+        const selectedApt = data.selectedAppointmentForReschedule;
+        return this.buildRescheduleSlotsPrompt(selectedApt, data);
       }
 
       case 'SELECT_NEW_SLOT': {
@@ -3235,10 +3443,20 @@ export class DecisionTreeService {
           doctorName: chosenSlot.doctorName,
         };
 
+        const reasonLine = data.rescheduleReason ? `\n• Motivo: ${data.rescheduleReason}` : '';
+
         return {
           replyMessages: [
-            `¿Estás seguro de reprogramar tu cita médica?\n\n• Especialidad: ${data.selectedAppointmentForReschedule?.specialty}\n• Nuevo horario: ${chosenSlot.dateTimeStr}\n\n1️⃣ Sí\n2️⃣ No`,
+            `¿Estás seguro de reprogramar tu cita médica?\n\n• Especialidad: ${data.selectedAppointmentForReschedule?.specialty}\n• Médico: ${chosenSlot.doctorName}\n• Nuevo horario: ${chosenSlot.dateTimeStr}${reasonLine}\n\n1️⃣ Sí\n2️⃣ No`,
           ],
+          interactivePayload: {
+            type: 'button',
+            title: 'Confirmar Reprogramación',
+            options: [
+              { id: '1', title: '1. Sí, reprogramar' },
+              { id: '2', title: '2. No, conservar actual' },
+            ],
+          },
           nextFlow: 'REPROGRAMAR_CITA',
           nextStep: 'CONFIRM_RESCHEDULE',
           updatedData: data,
@@ -3246,17 +3464,26 @@ export class DecisionTreeService {
       }
 
       case 'CONFIRM_RESCHEDULE': {
-        if (lower === '1' || lower.startsWith('si') || lower.startsWith('sí') || lower.includes('confirmar')) {
+        const cleanNum = text.replace(/\D/g, '');
+        if (
+          cleanNum === '1' ||
+          lower === '1' ||
+          lower.startsWith('si') ||
+          lower.startsWith('sí') ||
+          lower.includes('confirmar') ||
+          lower.includes('reprogramar')
+        ) {
           const aptId = data.selectedAppointmentForReschedule?.id;
           const dynamicSlot = (data as any).selectedDynamicSlot as DynamicSlot | undefined;
           const newDate = dynamicSlot?.isoDateTime
             ? new Date(dynamicSlot.isoDateTime)
             : new Date(Date.now() + 48 * 60 * 60 * 1000);
           const doctorName = dynamicSlot?.doctorName || data.pendingNewSlot?.doctorName;
+          const reason = data.rescheduleReason || 'Reprogramación solicitada por el paciente';
 
           return {
             replyMessages: [
-              `✅ ¡Tu cita ha sido reprogramada exitosamente! 🏥\n\n• Especialidad: ${data.selectedAppointmentForReschedule?.specialty}\n• Médico: ${doctorName}\n• Nuevo horario: ${dynamicSlot?.dateTimeStr || data.pendingNewSlot?.dateTime}\n• Sede: Hospital Universitario Nacional (Bogotá CAN - Calle 44 # 59-75)\n\nRecuerda presentarte 20 minutos antes con tu documento de identidad.`,
+              `✅ ¡Tu cita ha sido reprogramada exitosamente! 🏥\n\n• Especialidad: ${data.selectedAppointmentForReschedule?.specialty}\n• Médico: ${doctorName}\n• Nuevo horario: ${dynamicSlot?.dateTimeStr || data.pendingNewSlot?.dateTime}\n• Motivo registrado: ${reason}\n• Sede: Hospital Universitario Nacional (Bogotá CAN - Calle 44 # 59-75)\n\nRecuerda presentarte 20 minutos antes con tu documento de identidad.`,
               '¿Deseas realizar alguna otra gestión?\n\n1️⃣ Ir al menú principal\n2️⃣ Terminar conversación',
             ],
             nextFlow: 'IDLE',
@@ -3265,12 +3492,13 @@ export class DecisionTreeService {
               appointmentId: aptId,
               newDateTime: newDate,
               newDoctorName: doctorName,
+              reason,
             } : undefined,
             updatedData: { ...data, appointmentRescheduled: true },
           };
         }
 
-        if (lower === '2' || lower.startsWith('no') || lower.includes('cancelar') || lower.includes('conservar')) {
+        if (cleanNum === '2' || lower === '2' || lower.startsWith('no') || lower.includes('cancelar') || lower.includes('conservar')) {
           return {
             replyMessages: [
               'Has decidido conservar tu cita médica original. No se realizaron modificaciones en tu programación.',
@@ -3298,15 +3526,15 @@ export class DecisionTreeService {
   }
 
   /**
-   * Flujo de Cancelación de Cita Médica
+   * Flujo de Cancelación de Cita Médica (con Retención Prioritaria: Reprogramar primero, Cancelar como última alternativa)
    */
-  private static handleCancelarCita(
+  private static async handleCancelarCita(
     text: string,
     lower: string,
     step: string,
     data: FlowStateData,
     patientSavedName?: string
-  ): BotReplyResult {
+  ): Promise<BotReplyResult> {
     switch (step) {
       case 'NO_APPOINTMENTS': {
         if (lower === '1' || lower.includes('menu') || lower.includes('inicio') || lower.includes('si')) {
@@ -3339,41 +3567,99 @@ export class DecisionTreeService {
 
         const selectedApt = apts[num - 1];
         data.selectedAppointmentForCancel = selectedApt;
-        const dt = new Date(selectedApt.dateTime).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+        data.selectedAppointmentForReschedule = selectedApt;
 
-        return {
-          replyMessages: [
-            `¿Estás seguro de cancelar esta cita médica?\n\n• Especialidad: ${selectedApt.specialty}\n• Médico: ${selectedApt.doctorName}\n• Horario: ${dt}\n\n1️⃣ Sí\n2️⃣ No`,
-          ],
-          nextFlow: 'CANCELAR_CITA',
-          nextStep: 'CONFIRM_CANCEL',
-          updatedData: data,
-        };
+        // Paso 1 tras elegir cita: Preguntar los 5 motivos
+        return this.getModificationReasonPrompt(
+          'cancelar',
+          'CANCELAR_CITA',
+          'CANCEL_REASON',
+          data,
+          `Lamentamos que tengas inconvenientes para asistir a tu cita de *${selectedApt.specialty}* con *${selectedApt.doctorName}*.`
+        );
       }
 
-      case 'CONFIRM_CANCEL': {
-        const cleanNum = text.replace(/\D/g, '');
-        if (
-          cleanNum === '1' ||
-          lower === '1' ||
-          lower.startsWith('si') ||
-          lower.startsWith('sí') ||
-          lower.includes('cancelar')
-        ) {
+      case 'CANCEL_REASON': {
+        const parsed = this.parseModificationReason(text, lower);
+        if (parsed.type === 'INVALID') {
+          return this.getModificationReasonPrompt(
+            'cancelar',
+            'CANCELAR_CITA',
+            'CANCEL_REASON',
+            data,
+            undefined,
+            true
+          );
+        }
+
+        if (parsed.type === 'OTHER') {
           return {
             replyMessages: [
-              '¿Cuál es el motivo de la cancelación de tu cita médica?\n\n1️⃣ Conflictos de tiempo y trabajo\n2️⃣ Problemas de movilidad\n3️⃣ Estado de salud actual\n4️⃣ Otro\n\n(Por favor responde con el número de tu opción)',
+              'Por favor indícanos brevemente el motivo de la cancelación:',
             ],
             nextFlow: 'CANCELAR_CITA',
-            nextStep: 'CANCEL_REASON',
+            nextStep: 'CANCEL_CUSTOM_REASON',
             updatedData: data,
           };
         }
 
-        if (cleanNum === '2' || lower === '2' || lower.startsWith('no') || lower.includes('conservar')) {
+        data.cancellationReason = parsed.reason;
+        data.rescheduleReason = parsed.reason;
+
+        // Paso 2: Ofrecer reprogramar la cita como alternativa prioritaria antes de cancelar
+        return this.buildCancelRetentionPrompt(data.selectedAppointmentForCancel, parsed.reason, data);
+      }
+
+      case 'CANCEL_CUSTOM_REASON': {
+        const customReason = text.trim();
+        if (customReason.length < 2) {
           return {
             replyMessages: [
-              'Has decidido conservar tu cita médica. Tu cita se mantiene confirmada y programada en el HUN.',
+              '⚠️ Por favor indícanos brevemente el motivo de la cancelación:',
+            ],
+            nextFlow: 'CANCELAR_CITA',
+            nextStep: 'CANCEL_CUSTOM_REASON',
+            updatedData: data,
+          };
+        }
+
+        data.cancellationReason = customReason;
+        data.rescheduleReason = customReason;
+
+        // Paso 2: Ofrecer reprogramar la cita como alternativa prioritaria antes de cancelar
+        return this.buildCancelRetentionPrompt(data.selectedAppointmentForCancel, customReason, data);
+      }
+
+      case 'OFFER_RESCHEDULE': {
+        const cleanNum = text.replace(/\D/g, '');
+        const selectedApt = data.selectedAppointmentForCancel || data.selectedAppointmentForReschedule;
+        const reason = data.cancellationReason || data.rescheduleReason || 'Motivo registrado por el paciente';
+
+        // Opción 1: Reprogramar cita (Recomendado) -> Pasa directo a elegir nuevo horario sin volver a pedir motivo
+        if (
+          cleanNum === '1' ||
+          lower === '1' ||
+          lower.includes('reprogramar') ||
+          lower.includes('reagendar') ||
+          lower.includes('otra fecha')
+        ) {
+          return this.buildRescheduleSlotsPrompt(
+            selectedApt,
+            data,
+            '¡Excelente decisión! Vamos a reprogramar tu cita para que no pierdas la continuidad de tu atención médica 🏥.\n\n'
+          );
+        }
+
+        // Opción 2: Conservar cita actual sin cambios
+        if (
+          cleanNum === '2' ||
+          lower === '2' ||
+          lower.includes('conservar') ||
+          lower.includes('mantener')
+        ) {
+          return {
+            replyMessages: [
+              `¡Perfecto! Tu cita médica de *${selectedApt?.specialty || 'consulta externa'}* se mantiene confirmada y programada en el HUN sin modificaciones.`,
               '¿Deseas realizar alguna otra gestión?\n\n1️⃣ Ir al menú principal\n2️⃣ Terminar conversación',
             ],
             nextFlow: 'IDLE',
@@ -3382,105 +3668,91 @@ export class DecisionTreeService {
           };
         }
 
+        // Opción 3: Continuar con la cancelación (Pasa a la última confirmación donde reprogramar sigue siendo la opción 1)
+        if (
+          cleanNum === '3' ||
+          lower === '3' ||
+          lower.includes('continuar') ||
+          lower.includes('cancelar') ||
+          lower.includes('cancelación') ||
+          lower.includes('cancelacion')
+        ) {
+          const dt = selectedApt?.dateTime
+            ? new Date(selectedApt.dateTime).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })
+            : 'Horario asignado';
+
+          return {
+            replyMessages: [
+              `⚠️ ¿Estás completamente seguro de cancelar definitivamente tu cita médica?\n\n• Especialidad: ${selectedApt?.specialty}\n• Médico: ${selectedApt?.doctorName}\n• Horario: ${dt}\n• Motivo: ${reason}\n\nRecuerda que al cancelar se liberará tu cupo.\n\n1️⃣ 🔄 Prefiero reprogramar mi cita para otra fecha\n2️⃣ ❌ Sí, cancelar definitivamente mi cita`,
+            ],
+            interactivePayload: {
+              type: 'button',
+              title: 'Confirmación Final',
+              options: [
+                { id: '1', title: '1. Reprogramar cita' },
+                { id: '2', title: '2. Sí, cancelar' },
+              ],
+            },
+            nextFlow: 'CANCELAR_CITA',
+            nextStep: 'CONFIRM_CANCEL',
+            updatedData: data,
+          };
+        }
+
+        return this.buildCancelRetentionPrompt(selectedApt, reason, data, true);
+      }
+
+      case 'CONFIRM_CANCEL': {
+        const cleanNum = text.replace(/\D/g, '');
+        const selectedApt = data.selectedAppointmentForCancel || data.selectedAppointmentForReschedule;
+        const reason = data.cancellationReason || 'Cancelado por el paciente';
+
+        // Opción 1: Prefiere reprogramar su cita
+        if (
+          cleanNum === '1' ||
+          lower === '1' ||
+          lower.includes('reprogramar') ||
+          lower.includes('reagendar') ||
+          lower.startsWith('no')
+        ) {
+          return this.buildRescheduleSlotsPrompt(
+            selectedApt,
+            data,
+            '¡Excelente decisión! Vamos a reprogramar tu cita médica 🏥.\n\n'
+          );
+        }
+
+        // Opción 2: Confirmación definitiva de cancelación (Última alternativa)
+        if (
+          cleanNum === '2' ||
+          lower === '2' ||
+          lower.startsWith('si') ||
+          lower.startsWith('sí') ||
+          lower.includes('cancelar') ||
+          lower.includes('definitivamente')
+        ) {
+          const aptId = selectedApt?.id;
+          const specialty = selectedApt?.specialty || 'especialidad solicitada';
+          return {
+            replyMessages: [
+              `✅ Tu cita médica de ${specialty} ha sido cancelada exitosamente.\nMotivo registrado: ${reason}.\n\nEsperamos poder atenderte en una próxima oportunidad en el Hospital Universitario Nacional.`,
+              '¿Deseas realizar alguna otra gestión?\n\n1️⃣ Ir al menú principal\n2️⃣ Terminar conversación',
+            ],
+            nextFlow: 'IDLE',
+            nextStep: 'POST_CONFIRMATION_OPTIONS',
+            cancelAppointmentId: aptId,
+            cancelAppointmentReason: reason,
+            updatedData: { ...data, appointmentCancelled: true, cancellationReason: reason },
+          };
+        }
+
         return {
           replyMessages: [
-            'Por favor responde únicamente con el número:\n\n1️⃣ Sí\n2️⃣ No',
+            'Por favor responde únicamente con el número de tu elección:\n\n1️⃣ 🔄 Prefiero reprogramar mi cita para otra fecha\n2️⃣ ❌ Sí, cancelar definitivamente mi cita',
           ],
           nextFlow: 'CANCELAR_CITA',
           nextStep: 'CONFIRM_CANCEL',
           updatedData: data,
-        };
-      }
-
-      case 'CANCEL_REASON': {
-        const cleanNum = text.replace(/\D/g, '');
-        let selectedReason = '';
-
-        if (
-          cleanNum === '1' ||
-          lower === '1' ||
-          lower.includes('tiempo') ||
-          lower.includes('trabajo') ||
-          lower.includes('conflicto')
-        ) {
-          selectedReason = 'Conflictos de tiempo y trabajo';
-        } else if (
-          cleanNum === '2' ||
-          lower === '2' ||
-          lower.includes('movilidad') ||
-          lower.includes('transporte')
-        ) {
-          selectedReason = 'Problemas de movilidad';
-        } else if (
-          cleanNum === '3' ||
-          lower === '3' ||
-          lower.includes('salud')
-        ) {
-          selectedReason = 'Estado de salud actual';
-        } else if (
-          cleanNum === '4' ||
-          lower === '4' ||
-          lower.includes('otro')
-        ) {
-          return {
-            replyMessages: [
-              'Por favor indícanos el motivo de la cancelación:',
-            ],
-            nextFlow: 'CANCELAR_CITA',
-            nextStep: 'CANCEL_CUSTOM_REASON',
-            updatedData: data,
-          };
-        } else {
-          return {
-            replyMessages: [
-              '⚠️ Por favor responde con el número de una de las opciones:\n\n1️⃣ Conflictos de tiempo y trabajo\n2️⃣ Problemas de movilidad\n3️⃣ Estado de salud actual\n4️⃣ Otro',
-            ],
-            nextFlow: 'CANCELAR_CITA',
-            nextStep: 'CANCEL_REASON',
-            updatedData: data,
-          };
-        }
-
-        const aptId = data.selectedAppointmentForCancel?.id;
-        const specialty = data.selectedAppointmentForCancel?.specialty || 'especialidad solicitada';
-        return {
-          replyMessages: [
-            `✅ Tu cita médica de ${specialty} ha sido cancelada exitosamente.\nMotivo registrado: ${selectedReason}.\n\nEsperamos poder atenderte en una próxima oportunidad en el Hospital Universitario Nacional.`,
-            '¿Deseas realizar alguna otra gestión?\n\n1️⃣ Ir al menú principal\n2️⃣ Terminar conversación',
-          ],
-          nextFlow: 'IDLE',
-          nextStep: 'POST_CONFIRMATION_OPTIONS',
-          cancelAppointmentId: aptId,
-          cancelAppointmentReason: selectedReason,
-          updatedData: { ...data, appointmentCancelled: true, cancellationReason: selectedReason },
-        };
-      }
-
-      case 'CANCEL_CUSTOM_REASON': {
-        const customReason = text.trim();
-        if (customReason.length < 2) {
-          return {
-            replyMessages: [
-              '⚠️ Por favor indícanos el motivo de la cancelación:',
-            ],
-            nextFlow: 'CANCELAR_CITA',
-            nextStep: 'CANCEL_CUSTOM_REASON',
-            updatedData: data,
-          };
-        }
-
-        const aptId = data.selectedAppointmentForCancel?.id;
-        const specialty = data.selectedAppointmentForCancel?.specialty || 'especialidad solicitada';
-        return {
-          replyMessages: [
-            `✅ Tu cita médica de ${specialty} ha sido cancelada exitosamente.\nMotivo registrado: ${customReason}.\n\nEsperamos poder atenderte en una próxima oportunidad en el Hospital Universitario Nacional.`,
-            '¿Deseas realizar alguna otra gestión?\n\n1️⃣ Ir al menú principal\n2️⃣ Terminar conversación',
-          ],
-          nextFlow: 'IDLE',
-          nextStep: 'POST_CONFIRMATION_OPTIONS',
-          cancelAppointmentId: aptId,
-          cancelAppointmentReason: customReason,
-          updatedData: { ...data, appointmentCancelled: true, cancellationReason: customReason },
         };
       }
 
@@ -3641,6 +3913,230 @@ export class DecisionTreeService {
     }
 
     return AgendaService.getAvailableSlotsForSpecialty(specialtyName, undefined, limit);
+  }
+
+  /**
+   * Construye el menú interactivo para que el paciente elija su médico de preferencia
+   * o el cupo más próximo con cualquier especialista disponible en la especialidad.
+   */
+  private static async buildF01DoctorSelectionPrompt(
+    data: FlowStateData,
+    introMessage?: string,
+    isRetry: boolean = false
+  ): Promise<BotReplyResult> {
+    const specialtyName = data.specialty || 'Consulta Externa';
+    const doctors = await AgendaService.getDoctorsForSpecialty(specialtyName);
+    data.availableSpecialtyDoctors = doctors;
+
+    const docLines = doctors
+      .map((doc, idx) => `${idx + 2}️⃣ 👨‍⚕️ ${doc.name}`)
+      .join('\n');
+    const customDocOptNum = doctors.length + 2;
+
+    const menuText =
+      `👨‍⚕️ *Preferencia de Médico Especialista (${specialtyName})*\n\n` +
+      `¿Deseas agendar o continuar tu tratamiento con algún médico especialista en particular?\n\n` +
+      `1️⃣ ⚡ Cualquier especialista disponible (Cupo más próximo)\n` +
+      (docLines ? `${docLines}\n` : '') +
+      `${customDocOptNum}️⃣ 🔎 Escribir el nombre de otro médico especialista\n\n` +
+      `Por favor responde con el número de tu elección:`;
+
+    const replyMessages: string[] = [];
+    if (isRetry) {
+      replyMessages.push(`⚠️ Por favor selecciona una opción válida del *1 al ${customDocOptNum}*, o escribe el nombre del especialista:`);
+    } else if (introMessage) {
+      replyMessages.push(introMessage);
+    }
+    replyMessages.push(menuText);
+
+    return {
+      replyMessages,
+      interactivePayload: {
+        type: 'list',
+        title: `Especialistas · ${specialtyName}`.slice(0, 60),
+        buttonText: '👨‍⚕️ Elegir Especialista',
+        options: [
+          {
+            id: '1',
+            title: '1. Cualquier especialista',
+            description: 'Mostrar los cupos más próximos disponibles en la especialidad',
+          },
+          ...doctors.map((doc, idx) => ({
+            id: String(idx + 2),
+            title: `${idx + 2}. ${doc.name}`.slice(0, 60),
+            description: `Continuar tratamiento o agendar con ${doc.name} (${specialtyName})`.slice(0, 72),
+          })),
+          {
+            id: String(customDocOptNum),
+            title: `${customDocOptNum}. Otro médico especialista`,
+            description: 'Escribir manualmente el nombre del médico de tu preferencia',
+          },
+        ],
+      },
+      nextFlow: 'F01_CONSULTA',
+      nextStep: 'F01_SELECT_DOCTOR',
+      updatedData: data,
+    };
+  }
+
+  /**
+   * Construye la lista de horarios disponibles en F01_CONSULTA filtrando por médico preferido
+   * (si fue indicado) o mostrando la agenda general más próxima de la especialidad.
+   */
+  private static async buildF01SlotsPrompt(
+    data: FlowStateData,
+    preferredDoctorName?: string
+  ): Promise<BotReplyResult> {
+    const specialtyName = data.specialty || 'Consulta Externa';
+
+    if (preferredDoctorName && preferredDoctorName.trim().length > 0) {
+      const cleanRequestedDoc = preferredDoctorName.trim();
+      const doctorSlots = await AgendaService.getAvailableSlotsForDoctor(
+        specialtyName,
+        cleanRequestedDoc,
+        undefined,
+        3,
+        true
+      );
+
+      if (doctorSlots.length === 0) {
+        data.preferredDoctor = cleanRequestedDoc;
+        data.dynamicSlots = [];
+        return {
+          replyMessages: [
+            `🔎 Consultamos la agenda de *${specialtyName}*, pero en este momento *${cleanRequestedDoc}* no cuenta con cupos directos habilitados por este canal.`,
+            `¿Cómo prefieres continuar para no retrasar tu atención médica?\n\n` +
+              `1️⃣ 📋 Ingresar a lista de espera prioritaria con *${cleanRequestedDoc}*\n` +
+              `2️⃣ 👨‍⚕️ Ver horarios disponibles con otros especialistas de *${specialtyName}*\n` +
+              `3️⃣ 💬 Contactar con un asesor de agendamiento`,
+          ],
+          interactivePayload: {
+            type: 'list',
+            title: 'Sin cupos con especialista',
+            buttonText: '📋 Elegir Alternativa',
+            options: [
+              {
+                id: '1',
+                title: '1. Lista de espera médico',
+                description: `Solicitar cupo prioritario con ${cleanRequestedDoc}`.slice(0, 72),
+              },
+              {
+                id: '2',
+                title: '2. Otros especialistas',
+                description: `Ver horarios próximos en ${specialtyName}`.slice(0, 72),
+              },
+              {
+                id: '3',
+                title: '3. Hablar con un asesor',
+                description: 'Validar agenda con un auxiliar de admisiones HUN',
+              },
+            ],
+          },
+          nextFlow: 'F01_CONSULTA',
+          nextStep: 'F01_DOCTOR_NOT_FOUND',
+          updatedData: data,
+        };
+      }
+
+      const slots = doctorSlots.slice(0, 3);
+      const matchedDoctorName = slots[0].doctorName || cleanRequestedDoc;
+      data.dynamicSlots = slots;
+      data.preferredDoctor = matchedDoctorName;
+
+      const otherDocsOpt = slots.length + 1;
+      const waitlistOpt = slots.length + 2;
+
+      const slotOptions = slots
+        .map((s, idx) => `${idx + 1}️⃣ ${s.dateTimeStr}`)
+        .join('\n');
+
+      return {
+        replyMessages: [
+          `👨‍⚕️ Consultando agenda del especialista *${matchedDoctorName}* (${specialtyName})...`,
+          `Tenemos estos horarios disponibles con *${matchedDoctorName}*:\n\n` +
+            `${slotOptions}\n` +
+            `${otherDocsOpt}️⃣ 🔄 Ver horarios con otros especialistas de ${specialtyName}\n` +
+            `${waitlistOpt}️⃣ 📋 Solicitar otra fecha / Lista de espera con ${matchedDoctorName}\n\n` +
+            `(Abre el menú de horarios o responde con el número de tu opción):`,
+        ],
+        interactivePayload: {
+          type: 'list',
+          title: `Agenda · ${matchedDoctorName}`.slice(0, 60),
+          buttonText: '🗓️ Ver Horarios del Médico',
+          options: [
+            ...slots.map((s, idx) => ({
+              id: String(idx + 1),
+              title: `${idx + 1}. ${s.dateTimeStr}`.slice(0, 60),
+              description: `${matchedDoctorName} · ${specialtyName} HUN`.slice(0, 72),
+            })),
+            {
+              id: String(otherDocsOpt),
+              title: `${otherDocsOpt}. Otros especialistas`,
+              description: `Ver cupos más próximos con otros médicos de ${specialtyName}`.slice(0, 72),
+            },
+            {
+              id: String(waitlistOpt),
+              title: `${waitlistOpt}. Lista de espera`,
+              description: `Solicitar otra fecha con ${matchedDoctorName}`.slice(0, 72),
+            },
+          ],
+        },
+        nextFlow: 'F01_CONSULTA',
+        nextStep: 'F01_SELECT_SLOT',
+        updatedData: data,
+      };
+    }
+
+    // Sin médico específico -> Cualquier especialista disponible (cupos más próximos)
+    data.preferredDoctor = undefined;
+    const rawSlots = await this.getSlotsForSpecialty(specialtyName, data.codEspecialidadHosvital, 3);
+    const slots = rawSlots.slice(0, 3);
+    data.dynamicSlots = slots;
+
+    if (slots.length === 0) {
+      return {
+        replyMessages: [
+          `Consultando disponibilidad en agenda para ${specialtyName}...`,
+          `En este momento no encontramos cupos abiertos inmediatos en la agenda médica para ${specialtyName}.`,
+          '¿Deseas que un auxiliar valide sobrecupo o te agregue a la lista de espera prioritaria?\n\n1️⃣ Sí, agregar a lista de espera\n2️⃣ Probar con otra especialidad\n3️⃣ Menú principal',
+        ],
+        nextFlow: 'F01_CONSULTA',
+        nextStep: 'F01_SPECIALTY_NOT_FOUND',
+        updatedData: { ...data, attemptedSpecialty: specialtyName },
+      };
+    }
+
+    const slotOptions = slots
+      .map((s, idx) => `${idx + 1}️⃣ ${s.dateTimeStr}`)
+      .join('\n');
+    const waitlistOpt = `${slots.length + 1}️⃣ Solicitar otra fecha / Lista de espera`;
+
+    return {
+      replyMessages: [
+        `Consultando disponibilidad en agenda médica para ${specialtyName}...`,
+        `Tenemos estos horarios disponibles para ti:\n\n${slotOptions}\n${waitlistOpt}\n\n(Abre el menú de horarios o responde con el número de tu opción):`,
+      ],
+      interactivePayload: {
+        type: 'list',
+        title: `Horarios para ${specialtyName}`.slice(0, 60),
+        buttonText: '🗓️ Ver Horarios Disponibles',
+        options: [
+          ...slots.map((s, idx) => ({
+            id: String(idx + 1),
+            title: `${idx + 1}. ${s.dateTimeStr}`.slice(0, 60),
+            description: `${s.doctorName} · Hospital Universitario Nacional`.slice(0, 72),
+          })),
+          {
+            id: String(slots.length + 1),
+            title: `${slots.length + 1}. Lista de espera`,
+            description: 'Solicitar otra fecha o ingresar a lista de espera',
+          },
+        ],
+      },
+      nextFlow: 'F01_CONSULTA',
+      nextStep: 'F01_SELECT_SLOT',
+      updatedData: data,
+    };
   }
 
   /**
@@ -3854,43 +4350,15 @@ export class DecisionTreeService {
         data.feeTierLabel = feeInfo.tierLabel;
 
         // Si ya tenemos nombre y documento (registrados o encontrados en base de datos),
-        // consultamos agenda médica real y saltamos a selección de horario
+        // pasamos a la selección de médico especialista de preferencia
         if ((data.patientName || patientSavedName) && data.patientDoc) {
           const name = data.patientName || patientSavedName;
           data.patientName = name;
 
-          const rawSlots = data.dynamicSlots && data.dynamicSlots.length > 0
-            ? data.dynamicSlots
-            : await this.getSlotsForSpecialty(data.specialty || '', data.codEspecialidadHosvital, 3);
-          const slots = rawSlots.slice(0, 3);
-          data.dynamicSlots = slots;
-
-          if (slots.length === 0) {
-            return {
-              replyMessages: [
-                `En este momento no encontramos cupos abiertos inmediatos en la agenda médica del HUN para ${data.specialty}.`,
-                '¿Deseas que un auxiliar de agendamiento valide sobrecupo o te agregue a la lista de espera prioritaria?\n\n1️⃣ Sí, agregar a lista de espera\n2️⃣ Probar con otra especialidad\n3️⃣ Menú principal',
-              ],
-              nextFlow: 'F01_CONSULTA',
-              nextStep: 'F01_SPECIALTY_NOT_FOUND',
-              updatedData: { ...data, attemptedSpecialty: data.specialty },
-            };
-          }
-
-          const slotOptions = slots
-            .map((s, idx) => `${idx + 1}️⃣ ${s.dateTimeStr}`)
-            .join('\n');
-          const waitlistOpt = `${slots.length + 1}️⃣ Solicitar otra fecha / Lista de espera`;
-
-          return {
-            replyMessages: [
-              `Registrado: ${isFirst ? 'Primera vez' : 'Control'} para ${name}.`,
-              `Horarios disponibles en agenda para ${data.specialty}:\n\n${slotOptions}\n${waitlistOpt}\n\nPor favor responde con el número del horario deseado:`,
-            ],
-            nextFlow: 'F01_CONSULTA',
-            nextStep: 'F01_SELECT_SLOT',
-            updatedData: data,
-          };
+          return await this.buildF01DoctorSelectionPrompt(
+            data,
+            `Registrado: ${isFirst ? 'Primera vez' : 'Control'} para ${name}.`
+          );
         }
 
         // Si solo tenemos el nombre del paciente, saltamos al documento
@@ -3970,55 +4438,153 @@ export class DecisionTreeService {
           // Ignorar fallo de historial
         }
 
-        // Consultar disponibilidad real en agenda médica del HUN (Hosvital con fallback local)
-        const rawSlots = data.dynamicSlots && data.dynamicSlots.length > 0
-          ? data.dynamicSlots
-          : await this.getSlotsForSpecialty(data.specialty || '', data.codEspecialidadHosvital, 3);
-        const slots = rawSlots.slice(0, 3);
-        data.dynamicSlots = slots;
+        // Pasar a la selección de médico especialista de preferencia o cupo más próximo
+        return await this.buildF01DoctorSelectionPrompt(data);
+      }
 
-        if (slots.length === 0) {
+      case 'F01_SELECT_DOCTOR': {
+        const specialtyName = data.specialty || 'Consulta Externa';
+        const doctors: Array<{ name: string; code: string; specialtyName: string; officeCode: string }> =
+          data.availableSpecialtyDoctors || (await AgendaService.getDoctorsForSpecialty(specialtyName));
+        data.availableSpecialtyDoctors = doctors;
+
+        const customDocOptNum = doctors.length + 2;
+        const cleanNum = text.replace(/\D/g, '');
+        const choice = cleanNum.length >= 1 && cleanNum.length <= 2 ? parseInt(cleanNum, 10) : NaN;
+
+        // Opción 1: Cualquier especialista disponible (Cupo más próximo)
+        if (
+          choice === 1 ||
+          normUser.includes('cualquier') ||
+          normUser.includes('proximo') ||
+          normUser.includes('primero') ||
+          normUser.includes('sin preferencia')
+        ) {
+          return await this.buildF01SlotsPrompt(data, undefined);
+        }
+
+        // Opciones 2 a N+1: Selección de uno de los médicos listados de la especialidad
+        if (!isNaN(choice) && choice >= 2 && choice <= doctors.length + 1) {
+          const selectedDoctor = doctors[choice - 2];
+          return await this.buildF01SlotsPrompt(data, selectedDoctor.name);
+        }
+
+        // Opción N+2: Escribir el nombre de otro médico especialista
+        if (
+          choice === customDocOptNum ||
+          normUser.includes('escribir') ||
+          normUser.includes('otro medico') ||
+          normUser.includes('buscar medico') ||
+          normUser.includes('otro especialista')
+        ) {
           return {
             replyMessages: [
-              `Consultando disponibilidad en agenda para ${data.specialty}...`,
-              `En este momento no encontramos cupos abiertos inmediatos en la agenda médica para ${data.specialty}.`,
-              '¿Deseas que un auxiliar valide sobrecupo o te agregue a la lista de espera prioritaria?\n\n1️⃣ Sí, agregar a lista de espera\n2️⃣ Probar con otra especialidad\n3️⃣ Menú principal',
+              `🔎 Por favor escribe el *nombre y apellido del médico especialista* de *${specialtyName}* con quien deseas agendar o continuar tu tratamiento (Ej: *Dr. Carlos Mendoza*):`,
             ],
             nextFlow: 'F01_CONSULTA',
-            nextStep: 'F01_SPECIALTY_NOT_FOUND',
-            updatedData: { ...data, attemptedSpecialty: data.specialty },
+            nextStep: 'F01_INPUT_CUSTOM_DOCTOR',
+            updatedData: data,
           };
         }
 
-        const slotOptions = slots
-          .map((s, idx) => `${idx + 1}️⃣ ${s.dateTimeStr}`)
-          .join('\n');
-        const waitlistOpt = `${slots.length + 1}️⃣ Solicitar otra fecha / Lista de espera`;
+        // Si el paciente escribió directamente el nombre de un médico de la lista o uno personalizado
+        const matchedListedDoc = doctors.find((doc) => {
+          const normDoc = this.normalizeText(doc.name).replace(/\b(dr|dra|doctor|doctora)\b/g, '').trim();
+          const normInputClean = normUser.replace(/\b(dr|dra|doctor|doctora)\b/g, '').trim();
+          return (
+            normInputClean.length >= 3 &&
+            (normDoc.includes(normInputClean) || normInputClean.includes(normDoc))
+          );
+        });
+
+        if (matchedListedDoc) {
+          return await this.buildF01SlotsPrompt(data, matchedListedDoc.name);
+        }
+
+        if (text.trim().length >= 5 && /[a-zA-ZáéíóúÁÉÍÓÚñÑ]/.test(text) && isNaN(choice)) {
+          const rawName = text.trim();
+          const formattedDoc = /^(dr\.?|dra\.?|doctor|doctora)\b/i.test(rawName)
+            ? rawName
+            : `Dr(a). ${rawName}`;
+          return await this.buildF01SlotsPrompt(data, formattedDoc);
+        }
+
+        return await this.buildF01DoctorSelectionPrompt(data, undefined, true);
+      }
+
+      case 'F01_INPUT_CUSTOM_DOCTOR': {
+        const rawInput = text.trim();
+        if (rawInput.length < 3 || /^\d+$/.test(rawInput)) {
+          return {
+            replyMessages: [
+              `⚠️ Por favor escribe un nombre y apellido válido del médico especialista de *${data.specialty || 'la especialidad'}* (Ej: *Dr. Carlos Mendoza*):`,
+            ],
+            nextFlow: 'F01_CONSULTA',
+            nextStep: 'F01_INPUT_CUSTOM_DOCTOR',
+            updatedData: data,
+          };
+        }
+
+        const formattedDoc = /^(dr\.?|dra\.?|doctor|doctora)\b/i.test(rawInput)
+          ? rawInput
+          : `Dr(a). ${rawInput}`;
+
+        return await this.buildF01SlotsPrompt(data, formattedDoc);
+      }
+
+      case 'F01_DOCTOR_NOT_FOUND': {
+        const requestedDoc = data.preferredDoctor || 'el especialista solicitado';
+        const specialtyName = data.specialty || 'Consulta Externa';
+
+        if (lower === '1' || lower.includes('lista') || lower.includes('espera')) {
+          return {
+            replyMessages: [
+              `✅ Quedaste registrado(a) en la *lista de espera prioritaria* de *${specialtyName}* para continuar tu tratamiento con *${requestedDoc}*.`,
+              'Un auxiliar de admisiones del HUN te contactará por este medio tan pronto se habilite un cupo en la agenda del especialista.',
+              '¿Deseas realizar alguna otra gestión?\n\n1️⃣ Ir al menú principal\n2️⃣ Terminar conversación',
+            ],
+            nextFlow: 'IDLE',
+            nextStep: 'POST_CONFIRMATION_OPTIONS',
+            updatedData: data,
+            createTicket: {
+              type: 'E001_WAITING_LIST',
+              priority: 'NORMAL',
+              description: `Lista de espera prioritaria con médico específico (${requestedDoc}) en ${specialtyName}, paciente ${data.patientName || 'Particular'} (Doc: ${data.patientDoc || 'N/A'})`,
+            },
+          };
+        }
+
+        if (lower === '2' || lower.includes('otros') || lower.includes('horarios') || lower.includes('especialistas')) {
+          return await this.buildF01SlotsPrompt(data, undefined);
+        }
+
+        if (lower === '3' || lower.includes('asesor') || lower.includes('auxiliar') || lower.includes('agente')) {
+          return {
+            replyMessages: [
+              `Has solicitado contactar con un asesor de agendamiento para validar la agenda de *${requestedDoc}* en *${specialtyName}* 🏥.`,
+              'Un auxiliar de citas médicas revisará tu solicitud y te responderá en breve por este chat.',
+            ],
+            nextFlow: 'F04_AUXILIAR',
+            nextStep: 'ASSIGNED',
+            status: 'REQUIRES_AGENT',
+            updatedData: data,
+            createTicket: {
+              type: 'SPECIALTY_INQUIRY',
+              priority: 'NORMAL',
+              description: `Solicitud de cita con médico específico: ${requestedDoc} (${specialtyName}) - Paciente ${data.patientName || 'Particular'} (Doc: ${data.patientDoc || 'N/A'})`,
+            },
+          };
+        }
 
         return {
           replyMessages: [
-            `Consultando disponibilidad en agenda médica para ${data.specialty}...`,
-            `Tenemos estos horarios disponibles para ti:\n\n${slotOptions}\n${waitlistOpt}\n\n(Abre el menú de horarios o responde con el número de tu opción):`,
+            `⚠️ Por favor selecciona una opción válida (1, 2 o 3):\n\n` +
+              `1️⃣ 📋 Ingresar a lista de espera prioritaria con *${requestedDoc}*\n` +
+              `2️⃣ 👨‍⚕️ Ver horarios disponibles con otros especialistas de *${specialtyName}*\n` +
+              `3️⃣ 💬 Contactar con un asesor de agendamiento`,
           ],
-          interactivePayload: {
-            type: 'list',
-            title: `Horarios para ${data.specialty}`,
-            buttonText: '🗓️ Ver Horarios Disponibles',
-            options: [
-              ...slots.map((s, idx) => ({
-                id: String(idx + 1),
-                title: `${idx + 1}. ${s.dateTimeStr}`,
-                description: `${s.doctorName} · Hospital Universitario Nacional`,
-              })),
-              {
-                id: String(slots.length + 1),
-                title: `${slots.length + 1}. Lista de espera`,
-                description: 'Solicitar otra fecha o ingresar a lista de espera',
-              },
-            ],
-          },
           nextFlow: 'F01_CONSULTA',
-          nextStep: 'F01_SELECT_SLOT',
+          nextStep: 'F01_DOCTOR_NOT_FOUND',
           updatedData: data,
         };
       }
@@ -4026,17 +4592,42 @@ export class DecisionTreeService {
       case 'F01_SELECT_SLOT': {
         let slots = data.dynamicSlots || [];
         if (slots.length === 0 && data.specialty) {
-          slots = await this.getSlotsForSpecialty(data.specialty, data.codEspecialidadHosvital, 3);
+          slots = data.preferredDoctor
+            ? await AgendaService.getAvailableSlotsForDoctor(data.specialty, data.preferredDoctor, undefined, 3)
+            : await this.getSlotsForSpecialty(data.specialty, data.codEspecialidadHosvital, 3);
           data.dynamicSlots = slots;
         }
 
         const cleanNum = text.replace(/\D/g, '');
         const choice = parseInt(cleanNum, 10);
+        const hasPreferredDoctor = Boolean(data.preferredDoctor);
+        const otherDoctorsChoice = hasPreferredDoctor ? slots.length + 1 : -1;
+        const waitlistChoice = hasPreferredDoctor ? slots.length + 2 : slots.length + 1;
 
-        if (choice === 4 || lower.includes('otra fecha') || lower.includes('espera') || lower.includes('lista')) {
+        // Si estaba viendo agenda de un médico específico y elige "Ver horarios con otros especialistas"
+        if (
+          hasPreferredDoctor &&
+          (choice === otherDoctorsChoice ||
+            lower.includes('otros especialistas') ||
+            lower.includes('otro medico') ||
+            lower.includes('otro médico') ||
+            lower.includes('otros horarios'))
+        ) {
+          return await this.buildF01SlotsPrompt(data, undefined);
+        }
+
+        // Lista de espera (opción 4 en agenda general, o opción 5 en agenda filtrada por médico)
+        if (
+          choice === waitlistChoice ||
+          (!hasPreferredDoctor && choice === 4) ||
+          lower.includes('otra fecha') ||
+          lower.includes('espera') ||
+          lower.includes('lista')
+        ) {
+          const doctorDetail = data.preferredDoctor ? ` con *${data.preferredDoctor}*` : '';
           return {
             replyMessages: [
-              `✅ Quedaste registrado(a) en la lista de espera de agendamiento HUN para ${data.specialty}.`,
+              `✅ Quedaste registrado(a) en la lista de espera de agendamiento HUN para *${data.specialty}*${doctorDetail}.`,
               'Un auxiliar de admisiones te contactará cuando se habiliten nuevas fechas u horarios.',
               '¿Deseas realizar alguna otra gestión?\n\n1️⃣ Ir al menú principal\n2️⃣ Terminar conversación',
             ],
@@ -4046,15 +4637,16 @@ export class DecisionTreeService {
             createTicket: {
               type: 'E001_WAITING_LIST',
               priority: 'NORMAL',
-              description: `Lista de espera para ${data.specialty}, paciente ${data.patientName || 'Particular'} (Doc: ${data.patientDoc || 'N/A'})`,
+              description: `Lista de espera para ${data.specialty}${data.preferredDoctor ? ` (Médico preferido: ${data.preferredDoctor})` : ''}, paciente ${data.patientName || 'Particular'} (Doc: ${data.patientDoc || 'N/A'})`,
             },
           };
         }
 
         if (isNaN(choice) || choice < 1 || choice > slots.length) {
+          const maxOpt = hasPreferredDoctor ? slots.length + 2 : slots.length + 1;
           return {
             replyMessages: [
-              `⚠️ Por favor elige una opción válida entre 1 y ${slots.length} (o 4 para lista de espera):`,
+              `⚠️ Por favor elige una opción válida entre 1 y ${maxOpt}:`,
             ],
             nextFlow: 'F01_CONSULTA',
             nextStep: 'F01_SELECT_SLOT',
@@ -5266,6 +5858,33 @@ export class DecisionTreeService {
           '¿Cuál es tu número de documento de identidad (Cédula de Ciudadanía / Extranjería / TI)?\n\n(Lo solicitamos para consultar tu historia clínica en el HUN y vincular la cita)',
         ];
 
+      case 'F01_SELECT_DOCTOR': {
+        const docs: Array<{ name: string }> = data.availableSpecialtyDoctors || [];
+        const docLines = docs.map((d, idx) => `${idx + 2}️⃣ 👨‍⚕️ ${d.name}`).join('\n');
+        const customOpt = docs.length + 2;
+        return [
+          `👨‍⚕️ *Preferencia de Médico Especialista (${data.specialty || 'Consulta Externa'})*\n\n` +
+            `¿Deseas agendar o continuar tu tratamiento con algún médico especialista en particular?\n\n` +
+            `1️⃣ ⚡ Cualquier especialista disponible (Cupo más próximo)\n` +
+            (docLines ? `${docLines}\n` : '') +
+            `${customOpt}️⃣ 🔎 Escribir el nombre de otro médico especialista\n\n` +
+            `Por favor responde con el número de tu elección:`,
+        ];
+      }
+
+      case 'F01_INPUT_CUSTOM_DOCTOR':
+        return [
+          `🔎 Por favor escribe el *nombre y apellido del médico especialista* de *${data.specialty || 'la especialidad'}* con quien deseas agendar o continuar tu tratamiento (Ej: *Dr. Carlos Mendoza*):`,
+        ];
+
+      case 'F01_DOCTOR_NOT_FOUND':
+        return [
+          `¿Cómo prefieres continuar para tu cita de *${data.specialty || 'Consulta Externa'}*?\n\n` +
+            `1️⃣ 📋 Ingresar a lista de espera prioritaria con *${data.preferredDoctor || 'el especialista solicitado'}*\n` +
+            `2️⃣ 👨‍⚕️ Ver horarios disponibles con otros especialistas de *${data.specialty || 'la especialidad'}*\n` +
+            `3️⃣ 💬 Contactar con un asesor de agendamiento`,
+        ];
+
       case 'F01_SELECT_SLOT': {
         const specialtyKey = Object.keys(HUN_SPECIALTIES).find(
           (k) => HUN_SPECIALTIES[k].name === data.specialty
@@ -5311,24 +5930,39 @@ export class DecisionTreeService {
         ];
       }
 
+      case 'RESCHEDULE_REASON':
+        return [
+          '¿Cuál es el motivo por el que deseas reprogramar tu cita médica?\n\n1️⃣ Conflictos de tiempo y trabajo\n2️⃣ Problemas de movilidad o transporte\n3️⃣ Estado de salud actual\n4️⃣ Motivos económicos o administrativos\n5️⃣ Otro motivo\n\n(Por favor responde con el número de tu opción)',
+        ];
+
+      case 'RESCHEDULE_CUSTOM_REASON':
+        return [
+          'Por favor indícanos brevemente el motivo por el que deseas reprogramar tu cita médica:',
+        ];
+
       case 'CONFIRM_RESCHEDULE':
         return [
           '¿Estás seguro de reprogramar tu cita médica?\n\n1️⃣ Sí\n2️⃣ No',
         ];
 
+      case 'OFFER_RESCHEDULE':
+        return [
+          '¿Qué prefieres hacer con tu cita médica?\n\n1️⃣ 🔄 Reprogramar mi cita en otra fecha/horario (Recomendado)\n2️⃣ ✅ Conservar mi cita actual\n3️⃣ ❌ Continuar con la cancelación de la cita',
+        ];
+
       case 'CONFIRM_CANCEL':
         return [
-          '¿Estás seguro de cancelar esta cita médica?\n\n1️⃣ Sí\n2️⃣ No',
+          '⚠️ ¿Estás completamente seguro de cancelar definitivamente tu cita médica?\n\n1️⃣ 🔄 Prefiero reprogramar mi cita para otra fecha\n2️⃣ ❌ Sí, cancelar definitivamente mi cita',
         ];
 
       case 'CANCEL_REASON':
         return [
-          '¿Cuál es el motivo de la cancelación de tu cita médica?\n\n1️⃣ Conflictos de tiempo y trabajo\n2️⃣ Problemas de movilidad\n3️⃣ Estado de salud actual\n4️⃣ Otro\n\n(Por favor responde con el número de tu opción)',
+          '¿Cuál es el motivo por el que deseas cancelar tu cita médica?\n\n1️⃣ Conflictos de tiempo y trabajo\n2️⃣ Problemas de movilidad o transporte\n3️⃣ Estado de salud actual\n4️⃣ Motivos económicos o administrativos\n5️⃣ Otro motivo\n\n(Por favor responde con el número de tu opción)',
         ];
 
       case 'CANCEL_CUSTOM_REASON':
         return [
-          'Por favor indícanos el motivo de la cancelación:',
+          'Por favor indícanos brevemente el motivo de la cancelación:',
         ];
 
       case 'SCHEDULE_MENU':

@@ -387,11 +387,13 @@ export class WebhookController {
       const updated = await store.updateAppointmentSlot(
         botResult.rescheduleAppointment.appointmentId,
         botResult.rescheduleAppointment.newDateTime,
-        botResult.rescheduleAppointment.newDoctorName
+        botResult.rescheduleAppointment.newDoctorName,
+        botResult.rescheduleAppointment.reason
       );
       if (updated) {
-        console.log(`🔄 Cita reprogramada exitosamente en HUN: ${updated.id}`);
+        console.log(`🔄 Cita reprogramada exitosamente en HUN: ${updated.id} (Motivo: ${botResult.rescheduleAppointment.reason || 'No especificado'})`);
         socketService.emitAppointmentsUpdated(store.getAllAppointments());
+        socketService.emitContactsUpdated(store.getAllContacts());
       }
     }
 
@@ -403,6 +405,7 @@ export class WebhookController {
       if (cancelled) {
         console.log(`❌ Cita cancelada por usuario en HUN: ${cancelled.id} (Motivo: ${botResult.cancelAppointmentReason || 'No especificado'})`);
         socketService.emitAppointmentsUpdated(store.getAllAppointments());
+        socketService.emitContactsUpdated(store.getAllContacts());
 
         // Si la cita tenía ID oficial de Hosvital, sincronizar cancelación con la API del hospital
         if (cancelled.referralCode && cancelled.referralCode.startsWith('HOSVITAL-')) {

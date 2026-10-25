@@ -30,6 +30,24 @@ export const fetchCurrentUser = async (): Promise<AuthUser> => {
 };
 export const logout = async () => { await api.post('/api/auth/logout'); };
 
+export interface AppointmentHistoryEntry {
+  id: string;
+  appointmentId: string;
+  previousStatus?: string | null;
+  newStatus: string;
+  changedBy?: string | null;
+  note?: string | null;
+  createdAt: string;
+}
+
+export interface ModificationReasonRecord {
+  appointmentId: string;
+  specialty: string;
+  doctorName: string;
+  reason: string;
+  date: string;
+}
+
 export interface Contact {
   id: string;
   phone: string;
@@ -47,6 +65,11 @@ export interface Contact {
   userTypeId?: string;
   userTypeCode?: string;
   userTypeName?: string;
+  cancellationCount?: number;
+  cancellationReasons?: ModificationReasonRecord[];
+  rescheduleCount?: number;
+  wasRescheduled?: boolean;
+  rescheduleReasons?: ModificationReasonRecord[];
 }
 
 export interface Conversation {
@@ -105,6 +128,11 @@ export interface Appointment {
   isReferral: boolean;
   referralCode?: string;
   status: string;
+  wasRescheduled?: boolean;
+  rescheduleCount?: number;
+  rescheduleReason?: string;
+  cancellationReason?: string;
+  statusHistory?: AppointmentHistoryEntry[];
   createdAt: string;
 }
 
@@ -125,12 +153,15 @@ export const downloadAppointmentsExcel = async (appointments: Appointment[]) => 
     'Estado de pago': translatePaymentStatus(appointment.paymentStatus),
     'Tipo de ruta': appointment.isReferral ? 'Referido F-03' : 'Ambulatorio F-01',
     Estado: translateAppointmentStatus(appointment.status),
+    '¿Reagendada?': appointment.wasRescheduled || appointment.status === 'RESCHEDULED' ? 'Sí' : 'No',
+    'Motivo Reprogramación': appointment.rescheduleReason || '—',
+    'Motivo Cancelación': appointment.cancellationReason || '—',
     'Fecha de registro': new Date(appointment.createdAt),
   }));
   const worksheet = XLSX.utils.json_to_sheet(rows);
   worksheet['!cols'] = [
     { wch: 26 }, { wch: 28 }, { wch: 28 }, { wch: 17 }, { wch: 22 }, { wch: 28 }, { wch: 21 },
-    { wch: 14 }, { wch: 16 }, { wch: 18 }, { wch: 20 }, { wch: 22 }, { wch: 21 },
+    { wch: 14 }, { wch: 16 }, { wch: 24 }, { wch: 20 }, { wch: 22 }, { wch: 16 }, { wch: 30 }, { wch: 30 }, { wch: 21 },
   ];
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, 'Citas');
