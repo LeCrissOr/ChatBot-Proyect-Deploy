@@ -1,7 +1,8 @@
 import { PrismaClient } from '@prisma/client';
 import { ConversationFlow, ConversationStatus, FlowStateData, SenderType } from '../types';
 import { prisma } from './database.service';
-import { normalizeColombianPhone } from '../utils/phone';
+import { normalizeColombianPhone, isLidPhone } from '../utils/phone';
+import { socketService } from './socket.service';
 
 export interface UserTypeData {
   id: string;
@@ -710,13 +711,12 @@ class DataStore {
       safeData.residenceAddress = data.residenceAddress.trim();
     }
 
-    // Protección estricta: el teléfono del contacto representa su canal de WhatsApp (JID / teléfono internacional).
-    // NUNCA debe sobreescribirse si ya tiene un canal WhatsApp asignado (número numérico o LID),
-    // ya que eso rompería el enrutamiento de los mensajes entrantes y crearía sesiones duplicadas.
+    // Actualizar teléfono si no tenía, o si tenía un identificador temporal/LID y ahora se cuenta con un número real
     if (data.phone && typeof data.phone === 'string') {
       const normalizedPhone = normalizeColombianPhone(data.phone);
       if (normalizedPhone && normalizedPhone.length >= 7) {
-        if (!current.phone || current.phone.startsWith('paciente-')) {
+        const isCurrentLid = !current.phone || current.phone.startsWith('paciente-') || isLidPhone(current.phone);
+        if (isCurrentLid || !isLidPhone(normalizedPhone)) {
           safeData.phone = normalizedPhone;
         }
       }
@@ -753,6 +753,156 @@ class DataStore {
       }
     }
     return current;
+  }
+
+  /**
+   * Migra un contacto registrado inicialmente con un identificador temporal de WhatsApp (LID)
+   * hacia su número telefónico real (ej: 57310xxxxxxx), consolidando conversaciones y citas.
+   */
+  public async migrateLidContactToRealPhone(lidPhone: string, realPhone: string): Promise<ContactData | undefined> {
+    await this.ready;
+    const cleanLid = lidPhone.replace(/\D/g, '');
+    const cleanReal = normalizeColombianPhone(realPhone) || realPhone.replace(/\D/g, '');
+    if (!cleanLid || !cleanReal || cleanLid === cleanReal) return undefined;
+
+    // 1. Buscar contacto existente con el LID
+    let lidContact: ContactData | undefined;
+    for (const c of this.contacts.values()) {
+      if (c.phone === cleanLid || c.phone === lidPhone) {
+        lidContact = c;
+        break;
+      }
+    }
+
+    if (!lidContact && this.isPrismaConnected && this.prisma) {
+      const found = await this.prisma.contact.findFirst({
+        where: { OR: [{ phone: cleanLid }, { phone: lidPhone }] },
+        include: { userType: true },
+      });
+      if (found) {
+        lidContact = {
+          ...found,
+          userTypeCode: found.userType?.code || 'PARTICULAR',
+          userTypeName: found.userType?.name || 'Paciente Particular',
+        } as ContactData;
+        this.contacts.set(lidContact.id, lidContact);
+      }
+    }
+
+    if (!lidContact) return undefined;
+
+    console.log(`🔄 [Store] Migrando contacto ${lidContact.id} de LID (${lidContact.phone}) a Teléfono Real: ${cleanReal}`);
+
+    // 2. Buscar si ya existe otro contacto con el teléfono real
+    let realContact: ContactData | undefined;
+    for (const c of this.contacts.values()) {
+      if ((c.phone === cleanReal || (cleanReal.startsWith('57') && c.phone === cleanReal.slice(2))) && c.id !== lidContact.id) {
+        realContact = c;
+        break;
+      }
+    }
+
+    if (!realContact && this.isPrismaConnected && this.prisma) {
+      const found = await this.prisma.contact.findFirst({
+        where: {
+          OR: [
+            { phone: cleanReal },
+            ...(cleanReal.startsWith('57') && cleanReal.length === 12 ? [{ phone: cleanReal.slice(2) }] : []),
+          ],
+        },
+        include: { userType: true },
+      });
+      if (found && found.id !== lidContact.id) {
+        realContact = {
+          ...found,
+          userTypeCode: found.userType?.code || 'PARTICULAR',
+          userTypeName: found.userType?.name || 'Paciente Particular',
+        } as ContactData;
+        this.contacts.set(realContact.id, realContact);
+      }
+    }
+
+    if (realContact) {
+      // Reasignar conversaciones del contacto LID al contacto con teléfono real
+      for (const conv of this.conversations.values()) {
+        if (conv.contactId === lidContact.id) {
+          conv.contactId = realContact.id;
+          conv.contact = realContact;
+          if (this.isPrismaConnected && this.prisma) {
+            await this.prisma.conversation.update({
+              where: { id: conv.id },
+              data: { contactId: realContact.id },
+            }).catch(() => null);
+          }
+        }
+      }
+
+      // Reasignar citas del contacto LID al contacto con teléfono real
+      for (const apt of this.appointments) {
+        if (apt.contactId === lidContact.id || apt.contactPhone === cleanLid) {
+          apt.contactId = realContact.id;
+          apt.contactPhone = cleanReal;
+          if (this.isPrismaConnected && this.prisma) {
+            await this.prisma.appointment.update({
+              where: { id: apt.id },
+              data: { contactId: realContact.id },
+            }).catch(() => null);
+          }
+        }
+      }
+
+      // Copiar información del paciente si no estaba en realContact
+      const toUpdate: any = {};
+      if (!realContact.name && lidContact.name) toUpdate.name = lidContact.name;
+      if (!realContact.documentId && lidContact.documentId) {
+        toUpdate.documentId = lidContact.documentId;
+        toUpdate.documentType = lidContact.documentType;
+      }
+      if (!realContact.email && lidContact.email) toUpdate.email = lidContact.email;
+      if (!realContact.birthDate && lidContact.birthDate) toUpdate.birthDate = lidContact.birthDate;
+      if (!realContact.residenceCity && lidContact.residenceCity) toUpdate.residenceCity = lidContact.residenceCity;
+      if (!realContact.residenceAddress && lidContact.residenceAddress) toUpdate.residenceAddress = lidContact.residenceAddress;
+
+      if (Object.keys(toUpdate).length > 0) {
+        Object.assign(realContact, toUpdate);
+        if (this.isPrismaConnected && this.prisma) {
+          await this.prisma.contact.update({
+            where: { id: realContact.id },
+            data: toUpdate,
+          }).catch(() => null);
+        }
+      }
+
+      // Eliminar el contacto huérfano con el LID
+      this.contacts.delete(lidContact.id);
+      if (this.isPrismaConnected && this.prisma) {
+        await this.prisma.contact.delete({ where: { id: lidContact.id } }).catch(() => null);
+      }
+
+      socketService.emitContactsUpdated(this.getAllContacts());
+      return realContact;
+    } else {
+      // No existe contacto duplicado: simplemente actualizar el teléfono en este contacto
+      const oldPhone = lidContact.phone;
+      lidContact.phone = cleanReal;
+      lidContact.updatedAt = new Date();
+
+      if (this.isPrismaConnected && this.prisma) {
+        await this.prisma.contact.update({
+          where: { id: lidContact.id },
+          data: { phone: cleanReal },
+        }).catch(() => null);
+      }
+
+      for (const apt of this.appointments) {
+        if (apt.contactId === lidContact.id || apt.contactPhone === oldPhone) {
+          apt.contactPhone = cleanReal;
+        }
+      }
+
+      socketService.emitContactsUpdated(this.getAllContacts());
+      return lidContact;
+    }
   }
 
   public async updateContactUserType(id: string, userTypeCode: string): Promise<ContactData | undefined> {

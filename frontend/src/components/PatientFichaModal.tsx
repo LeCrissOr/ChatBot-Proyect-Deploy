@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { Contact, Appointment, ModificationReasonRecord } from '../lib/api';
 import { translatePaymentStatus } from '../lib/translations';
+import { formatPhoneDisplay } from '../lib/utils';
 
 interface PatientFichaModalProps {
   patient: Contact | null;
@@ -147,7 +148,7 @@ export const PatientFichaModal: React.FC<PatientFichaModalProps> = ({
                   </strong>
                 </span>
                 <span>·</span>
-                <span>WhatsApp: +{patient.phone}</span>
+                <span>WhatsApp: {formatPhoneDisplay(patient.phone)}</span>
               </p>
             </div>
           </div>
@@ -308,7 +309,7 @@ export const PatientFichaModal: React.FC<PatientFichaModalProps> = ({
                 <Phone className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
                 <div>
                   <span className="text-slate-400 block text-[11px]">Teléfono / Celular</span>
-                  <span className="font-semibold text-slate-800">+{patient.phone}</span>
+                  <span className="font-semibold text-slate-800">{formatPhoneDisplay(patient.phone)}</span>
                 </div>
               </div>
 

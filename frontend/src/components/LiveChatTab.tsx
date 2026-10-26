@@ -42,6 +42,7 @@ import {
   socket,
 } from '../lib/api';
 import { PatientFichaModal } from './PatientFichaModal';
+import { formatPhoneDisplay, isLidPhone } from '../lib/utils';
 
 const DeliveryStatus: React.FC<{ status: string; error?: string }> = ({ status, error }) => {
   if (status === 'pending') return <span title="Enviando"><Clock className="w-3.5 h-3.5 text-slate-400" /></span>;
@@ -358,7 +359,7 @@ export const LiveChatTab: React.FC = () => {
                   <div className="min-w-0 flex-1">
                     <div className="flex justify-between items-baseline mb-0.5">
                       <h4 className="font-semibold text-sm text-[#111B21] truncate">
-                        {conv.contact?.name || `+${conv.contact?.phone || 'Paciente'}`}
+                        {conv.contact?.name || (isLidPhone(conv.contact?.phone) ? 'Paciente (WhatsApp)' : formatPhoneDisplay(conv.contact?.phone))}
                       </h4>
                       <span className="text-[11px] text-[#8696A0] flex-shrink-0 ml-1 font-normal">
                         {new Date(conv.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -422,7 +423,7 @@ export const LiveChatTab: React.FC = () => {
                   </div>
                   <div className="text-xs text-[#667781] flex items-center gap-1.5 flex-wrap">
                     <span className="flex items-center gap-1 font-mono text-[11px]">
-                      <Phone className="w-3 h-3 text-[#00A884]" strokeWidth={1.5} /> +{selectedConv.contact?.phone}
+                      <Phone className="w-3 h-3 text-[#00A884]" strokeWidth={1.5} /> {formatPhoneDisplay(selectedConv.contact?.phone)}
                     </span>
                     <span>·</span>
                     <span>Flujo: <strong className="text-slate-700 font-medium">{selectedConv.currentFlow}</strong></span>

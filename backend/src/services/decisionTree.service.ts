@@ -5,6 +5,7 @@ import { PreparacionesService } from './preparaciones.service';
 import { TarifasService } from './tarifas.service';
 import { CONFIG } from '../config';
 import { store } from './store.service';
+import { normalizeColombianPhone, isLidPhone, formatPhoneFriendly } from '../utils/phone';
 
 // Especialidades oficiales disponibles en HUN para paciente particular (Catálogo Ambulatorio HUN)
 export const HUN_SPECIALTIES: Record<string, SpecialtyConfig> = {
@@ -264,7 +265,7 @@ export class DecisionTreeService {
     const docType = data.documentType || 'Cédula de Ciudadanía';
     const docId = data.documentId || 'No registrado';
     const name = data.name || 'No registrado';
-    const phone = data.phone || 'No registrado';
+    const phone = data.phone && !isLidPhone(data.phone) ? formatPhoneFriendly(data.phone) : 'No registrado';
     const email = data.email || 'No registrado';
     const city = data.city || 'Bogotá D.C.';
     const address = data.address || 'No registrada';
@@ -329,7 +330,7 @@ export class DecisionTreeService {
     const docType = data.patientDocumentType || 'Cédula de Ciudadanía';
     const docId = data.patientDoc || 'No registrado';
     const name = data.patientName || 'No registrado';
-    const phone = data.patientPhone || 'No registrado';
+    const phone = data.patientPhone && !isLidPhone(data.patientPhone) ? formatPhoneFriendly(data.patientPhone) : 'No registrado';
     const email = data.patientEmail || 'No registrado';
     const city = data.patientCity || 'Bogotá D.C.';
     const address = data.patientAddress || 'No registrada';

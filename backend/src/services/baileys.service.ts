@@ -5,7 +5,8 @@ import QRCode from 'qrcode';
 import path from 'path';
 import fs from 'fs';
 import { socketService } from './socket.service';
-import { normalizeColombianPhone } from '../utils/phone';
+import { normalizeColombianPhone, isLidPhone } from '../utils/phone';
+import { store } from './store.service';
 
 export type WhatsAppConnectionStatus = 'DISCONNECTED' | 'SCAN_QR' | 'CONNECTING' | 'CONNECTED';
 
@@ -20,6 +21,9 @@ class BaileysService {
 
   // Mapa para recordar el JID exacto (@lid o @s.whatsapp.net) de cada contacto
   private jidMap: Map<string, string> = new Map();
+  // Mapeos bidireccionales entre LID de WhatsApp y teléfonos colombianos reales
+  private lidToPhoneMap: Map<string, string> = new Map();
+  private phoneToLidMap: Map<string, string> = new Map();
 
   public setMessageHandler(handler: (phone: string, text: string, name?: string, messageId?: string) => Promise<any>) {
     this.messageHandler = handler;
@@ -116,6 +120,9 @@ class BaileysService {
           console.log('===============================================================\n');
 
           socketService.emitWhatsAppStatus(this.getStatus());
+
+          // Migrar en segundo plano cualquier contacto existente en la BD que tenga un LID
+          void this.migrateExistingLidContacts().catch(() => undefined);
         }
 
         if (connection === 'close') {
@@ -140,6 +147,16 @@ class BaileysService {
         }
       });
 
+      // Escuchar actualizaciones dinámicas de mapeo de LID a Teléfono emitidas por WhatsApp
+      this.sock.ev.on('lid-mapping.update' as any, ({ lid, pn }: { lid: string; pn: string }) => {
+        if (lid && pn) {
+          const rawDigits = pn.split('@')[0].split(':')[0].replace(/\D/g, '');
+          const normalized = normalizeColombianPhone(rawDigits) || rawDigits;
+          console.log(`🔗 [Baileys Event] lid-mapping.update: LID ${lid} -> Teléfono real +${normalized}`);
+          this.rememberMapping(lid, normalized);
+        }
+      });
+
       // Escucha de mensajes entrantes
       this.sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify' && type !== 'append') return;
@@ -157,22 +174,12 @@ class BaileysService {
             continue;
           }
 
-          const senderPhone = remoteJid.split('@')[0];
+          // Resolver el teléfono colombiano real del paciente (descartando LIDs de WhatsApp)
+          const senderPhone = await this.resolveSenderPhone(msg);
           const senderName = msg.pushName || 'Paciente';
 
-          // Guardar en el mapa de JIDs para enrutamiento exacto (@lid o @s.whatsapp.net)
-          this.jidMap.set(senderPhone, remoteJid);
-          this.jidMap.set(remoteJid, remoteJid);
-          const rawDigits = remoteJid.replace(/[^0-9]/g, '');
-          if (rawDigits) this.jidMap.set(rawDigits, remoteJid);
-
-          const normalizedSender = normalizeColombianPhone(senderPhone);
-          if (normalizedSender) {
-            this.jidMap.set(normalizedSender, remoteJid);
-            if (normalizedSender.startsWith('57') && normalizedSender.length === 12) {
-              this.jidMap.set(normalizedSender.slice(2), remoteJid);
-            }
-          }
+          // Asegurar mapeos en jidMap para que cualquier respuesta se envíe al JID exacto correcto
+          this.rememberMapping(remoteJid, senderPhone);
 
           // Extraer texto según el tipo de mensaje
           const text =
@@ -184,11 +191,11 @@ class BaileysService {
             '';
 
           if (text.trim() && this.messageHandler) {
-            console.log(`📥 [WhatsApp Recibido] De ${remoteJid} (${senderName}): "${text}"`);
+            console.log(`📥 [WhatsApp Recibido] De +${senderPhone} (${senderName}) [JID: ${remoteJid}]: "${text}"`);
             try {
               await this.messageHandler(senderPhone, text.trim(), senderName, msg.key.id || undefined);
             } catch (msgErr: any) {
-              console.error(`❌ [Baileys] Error procesando mensaje de ${senderPhone}:`, msgErr.message || msgErr);
+              console.error(`❌ [Baileys] Error procesando mensaje de +${senderPhone}:`, msgErr.message || msgErr);
             }
           }
         }
@@ -196,6 +203,156 @@ class BaileysService {
     } catch (err: any) {
       console.error('Error inicializando Baileys:', err);
       this.isInitializing = false;
+    }
+  }
+
+  /**
+   * Resuelve el número de teléfono real del paciente analizando remoteJid, remoteJidAlt,
+   * participantAlt y el repositorio de mapeo LID de Signal de Baileys.
+   */
+  private async resolveSenderPhone(msg: any): Promise<string> {
+    const remoteJid = msg.key?.remoteJid || '';
+    const isLid = remoteJid.endsWith('@lid');
+    const rawLid = remoteJid.split('@')[0].split(':')[0].replace(/\D/g, '');
+
+    // 1. Si no es un LID (ej: @s.whatsapp.net), el JID ya contiene el número telefónico directo
+    if (!isLid && remoteJid.includes('@s.whatsapp.net')) {
+      const rawDigits = remoteJid.split('@')[0].split(':')[0].replace(/\D/g, '');
+      const normalized = normalizeColombianPhone(rawDigits) || rawDigits;
+      if (normalized && !isLidPhone(normalized)) {
+        this.rememberMapping(remoteJid, normalized);
+        return normalized;
+      }
+    }
+
+    // 2. Si es LID, verificar si el mensaje incluye el JID alternativo telefónico (Baileys v7)
+    const remoteJidAlt = msg.key?.remoteJidAlt;
+    if (remoteJidAlt && typeof remoteJidAlt === 'string' && remoteJidAlt.includes('@s.whatsapp.net')) {
+      const rawDigits = remoteJidAlt.split('@')[0].split(':')[0].replace(/\D/g, '');
+      const normalized = normalizeColombianPhone(rawDigits) || rawDigits;
+      if (normalized && !isLidPhone(normalized) && normalized.length >= 7) {
+        console.log(`📱 [Baileys] Teléfono real resuelto desde remoteJidAlt: +${normalized} (LID: ${remoteJid})`);
+        this.rememberMapping(remoteJid, normalized);
+        return normalized;
+      }
+    }
+
+    // 3. Revisar participantAlt o participant (en grupos o mensajes delegados)
+    const participantAlt = msg.key?.participantAlt || msg.participant;
+    if (participantAlt && typeof participantAlt === 'string' && participantAlt.includes('@s.whatsapp.net')) {
+      const rawDigits = participantAlt.split('@')[0].split(':')[0].replace(/\D/g, '');
+      const normalized = normalizeColombianPhone(rawDigits) || rawDigits;
+      if (normalized && !isLidPhone(normalized) && normalized.length >= 7) {
+        console.log(`📱 [Baileys] Teléfono real resuelto desde participantAlt: +${normalized} (LID: ${remoteJid})`);
+        this.rememberMapping(remoteJid, normalized);
+        return normalized;
+      }
+    }
+
+    // 4. Revisar si ya lo tenemos en el caché en memoria
+    const cached = this.lidToPhoneMap.get(remoteJid) || this.lidToPhoneMap.get(rawLid);
+    if (cached && !isLidPhone(cached)) {
+      this.rememberMapping(remoteJid, cached);
+      return cached;
+    }
+
+    // 5. Consultar el repositorio de señales de Baileys (signalRepository.lidMapping.getPNForLID)
+    try {
+      const signalRepo = (this.sock as any)?.signalRepository;
+      if (signalRepo?.lidMapping?.getPNForLID) {
+        const pnJid = await signalRepo.lidMapping.getPNForLID(remoteJid);
+        if (pnJid && typeof pnJid === 'string' && pnJid.includes('@s.whatsapp.net')) {
+          const rawDigits = pnJid.split('@')[0].split(':')[0].replace(/\D/g, '');
+          const normalized = normalizeColombianPhone(rawDigits) || rawDigits;
+          if (normalized && !isLidPhone(normalized) && normalized.length >= 7) {
+            console.log(`📱 [Baileys] Teléfono real resuelto desde signalRepository: +${normalized} (LID: ${remoteJid})`);
+            this.rememberMapping(remoteJid, normalized);
+            return normalized;
+          }
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[Baileys] Aviso al consultar signalRepository para ${remoteJid}:`, err?.message || err);
+    }
+
+    // 6. Si no se pudo resolver el número real aún, devolver el identificador limpio
+    const fallback = normalizeColombianPhone(rawLid) || rawLid;
+    this.rememberMapping(remoteJid, fallback);
+    return fallback;
+  }
+
+  /**
+   * Guarda de forma bidireccional la relación entre el JID de WhatsApp y el número real,
+   * y migra en el store cualquier contacto creado previamente con el LID.
+   */
+  public rememberMapping(lidJid: string, realPhone: string) {
+    const cleanLid = lidJid.split('@')[0].split(':')[0].replace(/\D/g, '');
+    const cleanPhone = realPhone.replace(/\D/g, '');
+    const normalizedPhone = normalizeColombianPhone(cleanPhone) || cleanPhone;
+
+    if (!cleanPhone) return;
+
+    this.lidToPhoneMap.set(lidJid, normalizedPhone);
+    if (cleanLid) {
+      this.lidToPhoneMap.set(cleanLid, normalizedPhone);
+    }
+
+    this.phoneToLidMap.set(normalizedPhone, lidJid);
+    this.phoneToLidMap.set(cleanPhone, lidJid);
+    if (normalizedPhone.startsWith('57') && normalizedPhone.length === 12) {
+      this.phoneToLidMap.set(normalizedPhone.slice(2), lidJid);
+    }
+
+    // Registrar en jidMap para que sendMessage siempre envíe al JID correcto
+    this.jidMap.set(normalizedPhone, lidJid);
+    this.jidMap.set(cleanPhone, lidJid);
+    if (normalizedPhone.startsWith('57') && normalizedPhone.length === 12) {
+      this.jidMap.set(normalizedPhone.slice(2), lidJid);
+    }
+    if (cleanLid) {
+      this.jidMap.set(cleanLid, lidJid);
+    }
+    this.jidMap.set(lidJid, lidJid);
+
+    // Si cleanLid es diferente al teléfono real y era un LID numérico, migrar el contacto en BD
+    if (cleanLid && cleanLid !== normalizedPhone && isLidPhone(cleanLid) && !isLidPhone(normalizedPhone)) {
+      void store.migrateLidContactToRealPhone(cleanLid, normalizedPhone).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Examina los contactos existentes en la base de datos y, si alguno tiene un LID como teléfono,
+   * intenta resolver su número real mediante el signalRepository de Baileys.
+   */
+  public async migrateExistingLidContacts() {
+    try {
+      const allContacts = store.getAllContacts();
+      const lidContacts = allContacts.filter((c) => isLidPhone(c.phone));
+      if (lidContacts.length === 0) return;
+
+      console.log(`🔍 [Baileys] Verificando ${lidContacts.length} contactos con ID de WhatsApp temporal (LID)...`);
+
+      const signalRepo = (this.sock as any)?.signalRepository;
+      if (!signalRepo?.lidMapping?.getPNForLID) return;
+
+      for (const contact of lidContacts) {
+        try {
+          const lidJid = contact.phone.includes('@') ? contact.phone : `${contact.phone}@lid`;
+          const pnJid = await signalRepo.lidMapping.getPNForLID(lidJid);
+          if (pnJid && typeof pnJid === 'string' && pnJid.includes('@s.whatsapp.net')) {
+            const rawDigits = pnJid.split('@')[0].split(':')[0].replace(/\D/g, '');
+            const normalized = normalizeColombianPhone(rawDigits) || rawDigits;
+            if (normalized && normalized !== contact.phone && !isLidPhone(normalized)) {
+              console.log(`✅ [Baileys Auto-Migración] Contacto ${contact.name || contact.phone} resuelto: ${contact.phone} -> +${normalized}`);
+              this.rememberMapping(lidJid, normalized);
+            }
+          }
+        } catch (e) {
+          // continuar con el siguiente
+        }
+      }
+    } catch (err: any) {
+      console.warn('⚠️ [Baileys] Error durante auto-migración de contactos LID:', err.message || err);
     }
   }
 
