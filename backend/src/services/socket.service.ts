@@ -11,7 +11,12 @@ class SocketService {
       cors: {
         origin: (origin, callback) => {
           const allowed = [CONFIG.FRONTEND_URL, CONFIG.BACKEND_URL, 'http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:3001', 'http://127.0.0.1:3001'];
-          if (!origin || allowed.includes(origin) || /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$/.test(origin)) {
+          if (
+            !origin ||
+            allowed.includes(origin) ||
+            /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$/.test(origin) ||
+            /^https?:\/\/([a-zA-Z0-9.-]+\.)?hun\.edu\.co(:\d+)?$/.test(origin)
+          ) {
             callback(null, true);
           } else {
             callback(null, false);

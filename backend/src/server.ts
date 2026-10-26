@@ -34,7 +34,12 @@ app.use(
   cors({
     origin: (origin, callback) => {
       const allowed = [CONFIG.FRONTEND_URL, CONFIG.BACKEND_URL, 'http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:3001', 'http://127.0.0.1:3001'];
-      if (!origin || allowed.includes(origin) || /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$/.test(origin)) {
+      if (
+        !origin ||
+        allowed.includes(origin) ||
+        /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$/.test(origin) ||
+        /^https?:\/\/([a-zA-Z0-9.-]+\.)?hun\.edu\.co(:\d+)?$/.test(origin)
+      ) {
         callback(null, true);
       } else {
         callback(null, false);
@@ -180,7 +185,10 @@ Promise.all([authService.initialize(), store.waitUntilReady()]).then(async () =>
     console.log(`🏥 HUN Chatbot & Realtime Dashboard Server activo`);
     console.log(`💻 Acceso Local:   http://localhost:${CONFIG.PORT}`);
     console.log(`🌐 Acceso Red HUN: http://${lanIp}:${CONFIG.PORT}`);
-    console.log(`🔗 Webhook Meta:   http://${lanIp}:${CONFIG.PORT}/api/webhook`);
+    if (CONFIG.BACKEND_URL && !CONFIG.BACKEND_URL.includes('localhost')) {
+      console.log(`🌍 Subdominio HUN: ${CONFIG.BACKEND_URL}`);
+    }
+    console.log(`🔗 Webhook Meta:   ${CONFIG.BACKEND_URL ? `${CONFIG.BACKEND_URL}/api/webhook` : `http://${lanIp}:${CONFIG.PORT}/api/webhook`}`);
     console.log(`⚡ WebSocket & Dashboard Unificados listos`);
     console.log(`===================================================`);
 
