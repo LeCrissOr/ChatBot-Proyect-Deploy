@@ -45,4 +45,10 @@ export const CONFIG = {
   HUN_ENDPOINT_VERIFICAR_CANCELACION: process.env.HUN_ENDPOINT_VERIFICAR_CANCELACION || '/webServiceCancelarCitaH/verificar_cancelacion',
   HUN_ENDPOINT_TARIFAS: process.env.HUN_ENDPOINT_TARIFAS || '/webServiceTarifas/tarifas',
   HUN_ENDPOINT_PREPARACIONES: process.env.HUN_ENDPOINT_PREPARACIONES || '/webServicePreparaciones/preparaciones',
+
+  // Integración Externa: Parametrización y Evaluación de Agenda HUN (Filtro Particulares vs EPS / Bloqueos)
+  HUN_INTEGRACION_ENABLED: process.env.HUN_INTEGRACION_ENABLED !== 'false',
+  HUN_INTEGRACION_BASE_URL: process.env.HUN_INTEGRACION_BASE_URL || 'https://huncontigo.hun.edu.co/api/v1/integracion',
+  HUN_INTEGRACION_API_KEY: process.env.HUN_INTEGRACION_API_KEY || 'zegaqdHboAHMNl6T337pwGmy7sqFLXbFtrd3Agp3LWQ',
+  HUN_INTEGRACION_TIMEOUT_MS: parseInt(process.env.HUN_INTEGRACION_TIMEOUT_MS || '6000', 10),
 };

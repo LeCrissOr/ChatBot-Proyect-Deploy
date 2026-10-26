@@ -1,5 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import { CONFIG } from '../config';
+import { HunIntegracionService } from './hunIntegracion.service';
 
 export interface HunEspecialidadItem {
   codigo: string;
@@ -297,6 +298,11 @@ export class HunApiService {
         items = data.data;
       } else if (data && typeof data === 'object' && data.codigo_especialidad) {
         items = [data as HunAgendaSlotItem];
+      }
+
+      // Evaluar cupos con la API de Parametrización del HUN para filtrar bloqueos y validar cobertura particular
+      if (items.length > 0 && CONFIG.HUN_INTEGRACION_ENABLED) {
+        items = await HunIntegracionService.evaluarCupos(items, { cobertura: 'particular' });
       }
 
       this.agendaCache.set(cacheKey, { timestamp: Date.now(), items });

@@ -64,4 +64,18 @@ export class AgendaController {
       res.status(500).json({ error: 'Error al sincronizar con el Endpoint de Hosvital', details: error.message });
     }
   }
+
+  public static async getParametrizacion(req: Request, res: Response) {
+    try {
+      const { HunIntegracionService } = await import('../services/hunIntegracion.service');
+      const data = await HunIntegracionService.getParametrizacion(req.query as any);
+      if (!data) {
+        return res.status(503).json({ error: 'Integración de parametrización no disponible o no configurada.' });
+      }
+      res.json(data);
+    } catch (error: any) {
+      console.error('Error consultando parametrización de agenda:', error);
+      res.status(500).json({ error: 'Error al consultar parametrización de agenda', details: error.message });
+    }
+  }
 }

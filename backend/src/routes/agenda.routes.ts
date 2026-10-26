@@ -9,6 +9,7 @@ router.get('/calendar', AgendaController.getCalendarEvents);
 router.get('/filters', AgendaController.getFilters);
 router.get('/absences', AgendaController.getAbsences);
 router.get('/stats', AgendaController.getStats);
+router.get('/parametrizacion', AgendaController.getParametrizacion);
 
 // Sincronización en tiempo real con el Endpoint de Hosvital (sin Excel)
 router.post('/sync', AgendaController.syncAgendaFromEndpoint);
