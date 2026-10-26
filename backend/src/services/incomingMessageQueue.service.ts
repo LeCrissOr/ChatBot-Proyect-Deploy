@@ -58,7 +58,7 @@ class IncomingMessageQueueService {
     return db.$transaction(async (tx) => {
       // Serializa solo la selección del trabajo; el procesamiento ocurre fuera
       // de la transacción y no retiene conexiones durante llamadas a WhatsApp.
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(721904221)`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(721904221)`;
       const rows = await tx.$queryRaw<QueueJob[]>`
         SELECT q.id, q.phone, q.text, q."senderName", q."waMessageId", q."sourceChannel", q.attempts
         FROM cola_mensajes_entrantes q
