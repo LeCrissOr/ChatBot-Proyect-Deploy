@@ -1,6 +1,6 @@
 import { BotReplyResult, ConversationFlow, FlowStateData, SpecialtyConfig, DynamicSlot } from '../types';
 import { AgendaService } from './agenda.service';
-import { HunApiService } from './hunApi.service';
+import { HunApiService, normalizeHosvitalDocType } from './hunApi.service';
 import { PreparacionesService } from './preparaciones.service';
 import { TarifasService } from './tarifas.service';
 import { CONFIG } from '../config';
@@ -4723,16 +4723,22 @@ export class DecisionTreeService {
 
         let numeroCitaHosvital: number | undefined;
 
+        let hosvitalErrorMsg: string | undefined;
+
         if (selectedDyn?.agendaDetalleId) {
           try {
             const fechaStr = selectedDyn.isoDateTime ? selectedDyn.isoDateTime.split('T')[0] : appointmentDate.toISOString().split('T')[0];
             const horaStr = selectedDyn.isoDateTime?.includes('T') ? selectedDyn.isoDateTime.split('T')[1].substring(0, 8) : '08:00:00';
             const cupsVal = selectedDyn.cups || '890202';
 
+            const docTypeHosvital = normalizeHosvitalDocType(data.patientDocumentType || 'CC');
+            const docNumClean = String(data.patientDoc || '79810144').replace(/\D/g, '');
+
+            console.log(`📡 [DecisionTree] Publicando cita en Hosvital para paciente ${docTypeHosvital} ${docNumClean}...`);
             const asignarRes = await HunApiService.asignarCita({
               paciente: {
-                tipo: data.patientDocumentType || 'CC',
-                documento: data.patientDoc || '79810144',
+                tipo: docTypeHosvital,
+                documento: docNumClean,
               },
               medico: {
                 codigo_medico: selectedDyn.codigoMedico || selectedDyn.doctorCode || 'ME445',
@@ -4750,14 +4756,20 @@ export class DecisionTreeService {
             if (asignarRes.numeroCitaHosvital) {
               numeroCitaHosvital = asignarRes.numeroCitaHosvital;
               data.numeroCitaHosvital = numeroCitaHosvital;
-              console.log(`🎉 [DecisionTree] Cita confirmada en Hosvital #${numeroCitaHosvital}`);
+              console.log(`🎉 [DecisionTree] Cita asentada exitosamente en Hosvital #${numeroCitaHosvital}`);
+            } else {
+              hosvitalErrorMsg = asignarRes.message || (asignarRes.soap?.descripcion) || 'Sin confirmación de cupo en Hosvital';
+              console.warn(`⚠️ [DecisionTree] Hosvital no confirmó la cita: ${hosvitalErrorMsg}`);
             }
           } catch (err: any) {
+            hosvitalErrorMsg = err.message;
             console.warn(`⚠️ [DecisionTree] Error conectando con asignar_cita de Hosvital: ${err.message}`);
           }
         }
 
-        const hosvitalText = numeroCitaHosvital ? `\n• Número de Cita Hosvital: #${numeroCitaHosvital}` : '';
+        const hosvitalText = numeroCitaHosvital
+          ? `\n• Número Oficial Hosvital: #${numeroCitaHosvital}`
+          : (hosvitalErrorMsg ? `\n• Estado en Hosvital: En validación admisiones (${hosvitalErrorMsg})` : '');
 
         // Obtener instrucciones de preparación según el servicio o especialidad agendada
         const prepInstructions = await this.getPreparationInstructionsForService(
@@ -4788,6 +4800,11 @@ export class DecisionTreeService {
             appointmentConfirmed: true,
             hasConfirmedAppointment: true,
           },
+          createTicket: !numeroCitaHosvital ? {
+            type: 'E001_WAITING_LIST',
+            priority: 'HIGH',
+            description: `Cita por formalizar en Hosvital: Paciente ${patientName}${docText}, especialidad ${data.specialty || 'General'}. Estado: ${hosvitalErrorMsg || 'Pendiente'}`,
+          } : undefined,
           createAppointment: {
             specialty: data.specialty || 'General',
             doctorName: doctorName,

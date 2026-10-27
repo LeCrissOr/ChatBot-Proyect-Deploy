@@ -104,6 +104,7 @@ export interface AppointmentData {
   price: number;
   paymentStatus: string;
   paymentLink?: string;
+  numeroCitaHosvital?: number;
   isReferral: boolean;
   referralCode?: string;
   referralModel?: string;

@@ -51,4 +51,14 @@ export const CONFIG = {
   HUN_INTEGRACION_BASE_URL: process.env.HUN_INTEGRACION_BASE_URL || 'https://huncontigo.hun.edu.co/api/v1/integracion',
   HUN_INTEGRACION_API_KEY: process.env.HUN_INTEGRACION_API_KEY || 'zegaqdHboAHMNl6T337pwGmy7sqFLXbFtrd3Agp3LWQ',
   HUN_INTEGRACION_TIMEOUT_MS: parseInt(process.env.HUN_INTEGRACION_TIMEOUT_MS || '6000', 10),
+
+  // Configuración SOAP Hosvital Directa (DigitalWare WSAsicitcon y WSCancita)
+  HOSVITAL_SOAP_ENABLED: process.env.HOSVITAL_SOAP_ENABLED === 'true',
+  HOSVITAL_SOAP_BASE_URL: process.env.HOSVITAL_SOAP_BASE_URL || 'http://190.109.10.204/servlet',
+  HOSVITAL_SOAP_ASICITCON_PATH: process.env.HOSVITAL_SOAP_ASICITCON_PATH || '/awsasicitcon',
+  HOSVITAL_SOAP_CANCITA_PATH: process.env.HOSVITAL_SOAP_CANCITA_PATH || '/awscancita',
+  HOSVITAL_EMPRESA: process.env.HOSVITAL_EMPRESA || '1',
+  HOSVITAL_SEDE: process.env.HOSVITAL_SEDE || '001',
+  HOSVITAL_MAEDIR_USER: process.env.HOSVITAL_MAEDIR_USER || '',
+  HOSVITAL_MAEDIR_PASSWORD: process.env.HOSVITAL_MAEDIR_PASSWORD || '',
 };
