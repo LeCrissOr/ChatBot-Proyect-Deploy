@@ -845,15 +845,17 @@ export class AgendaService {
                 ? (s.cups[0]?.codigo || '890202')
                 : (typeof s.cups === 'string' ? s.cups : '890202');
 
+              const realDetalleId = Number(s.id_agenda_detalle || s.idAgendaDetalle || (s as any).id || (s as any).Id || (s as any).id_detalle || 0);
+
               validSlots.push({
-                id: `hosvital-${s.id_agenda_detalle || s.idAgendaDetalle || idx}-${Date.now()}`,
+                id: `hosvital-${realDetalleId || idx}-${Date.now()}`,
                 doctorName: formattedDoctor,
                 doctorCode: s.codigo_medico?.trim() || 'ME445',
                 officeCode: consultorioStr,
                 specialtyName: specName,
                 dateTimeStr: `${dayName} ${dayNum} de ${monthName}, ${timeFormatted} · ${formattedDoctor} (Cons. ${consultorioStr})`,
                 isoDateTime: `${s.fecha_atencion}T${s.hora_inicial || '08:00:00'}`,
-                agendaDetalleId: Number(s.id_agenda_detalle || s.idAgendaDetalle) || 677,
+                agendaDetalleId: realDetalleId,
                 codigoMedico: s.codigo_medico?.trim() || 'ME445',
                 cups: cupsVal,
                 consultorio: consultorioStr,
@@ -866,8 +868,12 @@ export class AgendaService {
             if (validSlots.length > 0) return validSlots;
           }
         }
+        // Acoplamiento estricto: Si Hosvital está habilitado y no hay cupos reales abiertos, NO inventar cupos
+        console.log(`ℹ️ [AgendaService] No hay cupos reales disponibles en Hosvital para ${specialtyQuery}.`);
+        return [];
       } catch (err) {
-        console.warn('⚠️ [AgendaService] Error consultando cupos Hosvital, activando contingencia de cupos local:', err);
+        console.warn('⚠️ [AgendaService] Error consultando cupos Hosvital:', err);
+        return [];
       }
     }
 
@@ -1003,6 +1009,10 @@ export class AgendaService {
       });
 
       if (matchedDoc) {
+        if (CONFIG.HOSVITAL_ENABLED) {
+          console.log(`ℹ️ [AgendaService] Dr(a). ${doctorName} no tiene cupos abiertos en la agenda real de Hosvital.`);
+          return [];
+        }
         const now = fromDate || new Date();
         const generated: DynamicSlot[] = [];
         const slotTimes = [

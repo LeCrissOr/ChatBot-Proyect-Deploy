@@ -3909,8 +3909,16 @@ export class DecisionTreeService {
           }
         }
       }
+
+      if (CONFIG.HOSVITAL_ENABLED) {
+        console.log(`ℹ️ [DecisionTree] No hay cupos reales abiertos en Hosvital para ${specialtyName}.`);
+        return [];
+      }
     } catch (err: any) {
-      console.warn(`⚠️ [DecisionTree] Fallback de agenda Hosvital por error: ${err.message}`);
+      console.warn(`⚠️ [DecisionTree] Error consultando agenda Hosvital: ${err.message}`);
+      if (CONFIG.HOSVITAL_ENABLED) {
+        return [];
+      }
     }
 
     return AgendaService.getAvailableSlotsForSpecialty(specialtyName, undefined, limit);
@@ -4767,9 +4775,40 @@ export class DecisionTreeService {
           }
         }
 
-        const hosvitalText = numeroCitaHosvital
-          ? `\n• Número Oficial Hosvital: #${numeroCitaHosvital}`
-          : (hosvitalErrorMsg ? `\n• Estado en Hosvital: En validación admisiones (${hosvitalErrorMsg})` : '');
+        // REGLA ESTRICTA DE PRODUCCIÓN: Si Hosvital está habilitado y NO devolvió número oficial de cita,
+        // NUNCA confirmar la cita localmente ni engañar al paciente o a la base de datos.
+        if (CONFIG.HOSVITAL_ENABLED && !numeroCitaHosvital) {
+          console.warn(`❌ [DecisionTree] Asignación en Hosvital no completada. Motivo: ${hosvitalErrorMsg || 'Rechazo'}. NO se confirma cita en BD.`);
+          return {
+            replyMessages: [
+              `⚠️ En este momento no fue posible confirmar tu cita en el sistema central de Hosvital.\n\n• Motivo reportado: ${hosvitalErrorMsg || 'El turno ya no está disponible o requiere validación hospitalaria'}.\n\nPara asegurar tu atención y no perder tu solicitud, hemos radicado un caso prioritario para la Coordinación de Admisiones del HUN. Un auxiliar te contactará para formalizar tu cita directamente en Hosvital.`,
+              '¿Deseas realizar alguna otra gestión?\n\n1️⃣ Ir al menú principal\n2️⃣ Terminar conversación\n\nPor favor responde con el número de tu opción (1 o 2):',
+            ],
+            interactivePayload: {
+              type: 'list',
+              title: 'Gestión en Admisiones',
+              buttonText: '📋 Opciones Posteriores',
+              options: [
+                { id: '1', title: '1. Ir al Menú Principal', description: 'Consultar otra especialidad o servicio' },
+                { id: '2', title: '2. Terminar Conversación', description: 'Finalizar la sesión de atención' },
+              ],
+            },
+            nextFlow: 'IDLE',
+            nextStep: 'POST_CONFIRMATION_OPTIONS',
+            createTicket: {
+              type: 'E001_WAITING_LIST',
+              priority: 'HIGH',
+              description: `Fallo de confirmación en Hosvital: Paciente ${patientName}${docText}, especialidad ${data.specialty || 'General'}, médico ${doctorName}, horario ${selectedDyn?.dateTimeStr || 'N/A'}. Error devuelto: ${hosvitalErrorMsg || 'Sin número de cita'}`,
+            },
+            updatedData: {
+              ...data,
+              appointmentConfirmed: false,
+              hasConfirmedAppointment: false,
+            },
+          };
+        }
+
+        const hosvitalText = numeroCitaHosvital ? `\n• Número Oficial Hosvital: #${numeroCitaHosvital}` : '';
 
         // Obtener instrucciones de preparación según el servicio o especialidad agendada
         const prepInstructions = await this.getPreparationInstructionsForService(
@@ -4779,7 +4818,7 @@ export class DecisionTreeService {
 
         return {
           replyMessages: [
-            '🎉 ¡Tu cita ha sido confirmada con éxito en el HUN! 🏥',
+            '🎉 ¡Tu cita ha sido confirmada con éxito en Hosvital! 🏥',
             `Detalles de tu cita:\n• Especialidad: ${data.specialty}\n• Paciente: ${patientName}${docText}\n• Horario: ${selectedDyn?.dateTimeStr || data.selectedSlot?.dateTime}\n• Especialista: ${doctorName}${officeText}${hosvitalText}\n• Sede: Hospital Universitario Nacional de Colombia (Bogotá - Calle 44 # 59-75)\n• Forma de pago: ${payStatus === 'PAY_AT_WINDOW' ? 'Pago en ventanilla' : 'Pago virtual'}\n\nTe enviaremos un recordatorio automático 24 horas antes de tu cita.`,
             prepInstructions,
             '¿Qué deseas hacer a continuación?\n\n1️⃣ Ir al menú principal\n2️⃣ Terminar conversación\n\nPor favor responde con el número de tu opción (1 o 2):',
@@ -4799,12 +4838,8 @@ export class DecisionTreeService {
             ...data,
             appointmentConfirmed: true,
             hasConfirmedAppointment: true,
+            numeroCitaHosvital: numeroCitaHosvital,
           },
-          createTicket: !numeroCitaHosvital ? {
-            type: 'E001_WAITING_LIST',
-            priority: 'HIGH',
-            description: `Cita por formalizar en Hosvital: Paciente ${patientName}${docText}, especialidad ${data.specialty || 'General'}. Estado: ${hosvitalErrorMsg || 'Pendiente'}`,
-          } : undefined,
           createAppointment: {
             specialty: data.specialty || 'General',
             doctorName: doctorName,
