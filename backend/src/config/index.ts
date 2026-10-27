@@ -54,7 +54,7 @@ export const CONFIG = {
 
   // Configuración SOAP Hosvital Directa (DigitalWare WSAsicitcon y WSCancita)
   HOSVITAL_SOAP_ENABLED: process.env.HOSVITAL_SOAP_ENABLED === 'true',
-  HOSVITAL_SOAP_BASE_URL: process.env.HOSVITAL_SOAP_BASE_URL || 'http://172.16.1.27:8080/hosvital/servlet',
+  HOSVITAL_SOAP_BASE_URL: process.env.HOSVITAL_SOAP_BASE_URL || 'http://172.16.1.71:8080/hosvital/servlet',
   HOSVITAL_SOAP_ASICIME_PATH: process.env.HOSVITAL_SOAP_ASICIME_PATH || '/awsasicime',
   HOSVITAL_SOAP_ASICITCON_PATH: process.env.HOSVITAL_SOAP_ASICITCON_PATH || '/awsasicitcon',
   HOSVITAL_SOAP_CANCITA_PATH: process.env.HOSVITAL_SOAP_CANCITA_PATH || '/awscancita',
