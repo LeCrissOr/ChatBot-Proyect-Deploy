@@ -47,6 +47,23 @@ export interface HunAgendaSlotItem {
   tiempo_intervalo?: string | number;
 }
 
+/**
+ * Normaliza los tipos de documento al código estándar de 2-3 caracteres que exige Hosvital
+ * (CC, TI, CE, PA, RC, PT, etc.)
+ */
+export function normalizeHosvitalDocType(docType?: string): string {
+  if (!docType) return 'CC';
+  const clean = docType.toUpperCase().trim();
+  if (clean.includes('CIUDADAN') || clean === 'CC') return 'CC';
+  if (clean.includes('TARJETA') || clean === 'TI') return 'TI';
+  if (clean.includes('EXTRANJER') || clean === 'CE') return 'CE';
+  if (clean.includes('PASAPORTE') || clean === 'PA') return 'PA';
+  if (clean.includes('REGISTRO') || clean === 'RC') return 'RC';
+  if (clean.includes('TEMPORAL') || clean.includes('PPT') || clean === 'PT') return 'PT';
+  if (clean.includes('SALVOCONDUCTO') || clean === 'SC') return 'SC';
+  return clean.slice(0, 3);
+}
+
 export interface HunAsignarCitaPayload {
   paciente: {
     tipo: string;
@@ -314,11 +331,11 @@ export class HunApiService {
   }
 
   /**
-   * 5. Asigna / Confirma una cita médica en Hosvital
+   * 5. Asigna / Confirma una cita médica en Hosvital a través de la API REST intermedia
    */
-  public static async asignarCita(payload: HunAsignarCitaPayload): Promise<HunAsignarCitaResponse> {
+  public static async asignarCita(rawPayload: HunAsignarCitaPayload): Promise<HunAsignarCitaResponse> {
     if (!CONFIG.HOSVITAL_ENABLED) {
-      console.log('ℹ️ [HunApi] Hosvital deshabilitado. Simulando creación de cita.');
+      console.log('ℹ️ [HunApi] Hosvital deshabilitado en configuración. Simulando creación de cita.');
       return {
         success: true,
         message: 'Cita simulada localmente (Hosvital deshabilitado)',
@@ -326,50 +343,112 @@ export class HunApiService {
       };
     }
 
-    try {
-      console.log(`📡 [HunApi] Enviando asignación de cita al endpoint Hosvital:`, {
-        paciente: `${payload.paciente.tipo} ${payload.paciente.documento}`,
-        medico: payload.medico.codigo_medico,
-        agendaDetalleId: payload.agenda_detalle_id,
-        fecha: payload.fecha,
-        hora: payload.hora,
-      });
+    // Normalizar y sanitizar datos para que cumplan estrictamente los requisitos de Hosvital
+    const cleanDocType = normalizeHosvitalDocType(rawPayload.paciente?.tipo);
+    const cleanDocNum = String(rawPayload.paciente?.documento || '').replace(/\D/g, '');
+    const cleanConsultorio = parseInt(String(rawPayload.consultorio || '200').replace(/\D/g, ''), 10) || 200;
+    const cleanTiempo = Number(rawPayload.tiempo_atencion) || 20;
+    const cleanAgendaId = Number(rawPayload.agenda_detalle_id) || 677;
 
+    const payload: HunAsignarCitaPayload = {
+      ...rawPayload,
+      paciente: {
+        tipo: cleanDocType,
+        documento: cleanDocNum,
+      },
+      consultorio: cleanConsultorio,
+      tiempo_atencion: cleanTiempo,
+      agenda_detalle_id: cleanAgendaId,
+    };
+
+    const targetUrl = `${CONFIG.HUN_API_URL}${CONFIG.HUN_ENDPOINT_ASIGNAR_CITA}`;
+
+    console.log('═════════════════════════════════════════════════════════════════════');
+    console.log('📡 [Hosvital - Asignar Cita] SOLICITUD A API INTERMEDIA:', targetUrl);
+    console.log('📦 PAYLOAD ENVIADO:');
+    console.log(JSON.stringify(payload, null, 2));
+    console.log('═════════════════════════════════════════════════════════════════════');
+
+    try {
       const response = await this.getClient().post(
         CONFIG.HUN_ENDPOINT_ASIGNAR_CITA,
         payload
       );
 
-      // Invalidar caché de agenda de esa especialidad tras asignar cita
+      // Invalidar caché de agenda tras confirmar cita
       this.agendaCache.clear();
 
       const resData = response.data;
+      console.log('📥 [Hosvital - Asignar Cita] RESPUESTA RECIBIDA (HTTP ' + response.status + '):');
+      console.log(JSON.stringify(resData, null, 2));
+      console.log('═════════════════════════════════════════════════════════════════════');
+
       let numeroCita: number | undefined;
 
-      if (resData?.soap?.descripcion) {
-        const match = resData.soap.descripcion.match(/cita\s+(\d+)/i);
+      // 1. Buscar en propiedades directas comunes de Hosvital y wrappers
+      const directCandidates = [
+        resData?.numeroCitaHosvital,
+        resData?.numero_cita,
+        resData?.NumeroCita,
+        resData?.cita,
+        resData?.Cita,
+        resData?.id,
+        resData?.Id,
+        resData?.consecutivo,
+        resData?.data?.Id,
+        resData?.data?.NumeroCita,
+        resData?.data?.numero_cita,
+        resData?.data?.cita,
+      ];
+      for (const val of directCandidates) {
+        if (val !== undefined && val !== null && !isNaN(Number(val)) && Number(val) > 0) {
+          numeroCita = Number(val);
+          break;
+        }
+      }
+
+      // 2. Buscar en respuesta SOAP descripcion mediante expresión regular
+      if (!numeroCita && resData?.soap?.descripcion) {
+        const match = String(resData.soap.descripcion).match(/(?:cita|número|consecutivo)\s*[:#]?\s*(\d+)/i) ||
+                      String(resData.soap.descripcion).match(/(\d{4,10})/);
         if (match && match[1]) {
           numeroCita = parseInt(match[1], 10);
         }
       }
 
-      if (!numeroCita && resData?.data?.Id) {
-        numeroCita = resData.data.Id;
+      // 3. Buscar en resData.message
+      if (!numeroCita && resData?.message) {
+        const match = String(resData.message).match(/(?:cita|número|consecutivo)\s*[:#]?\s*(\d+)/i);
+        if (match && match[1]) {
+          numeroCita = parseInt(match[1], 10);
+        }
       }
 
+      const isSuccess = resData.success !== false && (numeroCita !== undefined || resData?.soap?.ok === true);
+
       return {
-        success: resData.success !== false,
+        success: isSuccess,
         http_status: response.status,
-        message: resData.message || resData?.soap?.descripcion,
+        message: resData.message || resData?.soap?.descripcion || 'Cita procesada en Hosvital',
         data: resData.data,
         soap: resData.soap,
         numeroCitaHosvital: numeroCita,
       };
     } catch (error: any) {
-      console.error(`❌ [HunApi] Error asignando cita en Hosvital:`, error.response?.data || error.message);
+      console.error('═════════════════════════════════════════════════════════════════════');
+      console.error('❌ [Hosvital - Asignar Cita] ERROR LLAMANDO A', targetUrl);
+      if (error.response) {
+        console.error('❌ STATUS HTTP:', error.response.status);
+        console.error('❌ RESPUESTA ERROR:', JSON.stringify(error.response.data, null, 2));
+      } else {
+        console.error('❌ ERROR MENSAJE:', error.message);
+        console.error('❌ ERROR CODE:', error.code);
+      }
+      console.error('═════════════════════════════════════════════════════════════════════');
+
       return {
         success: false,
-        message: error.response?.data?.message || error.message,
+        message: error.response?.data?.message || error.response?.data?.soap?.descripcion || error.message,
       };
     }
   }

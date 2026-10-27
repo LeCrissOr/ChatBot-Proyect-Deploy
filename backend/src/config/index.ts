@@ -31,7 +31,7 @@ export const CONFIG = {
   // Hosvital / HUN API Endpoints Config (Sin Excel - 100% Endpoints)
   HUN_API_URL: process.env.HUN_API_URL || 'http://190.109.10.204',
   HUN_API_KEY: process.env.HUN_API_KEY || 'HospitalUniversitarioNacionaldeColombia',
-  HUN_API_TIMEOUT_MS: parseInt(process.env.HUN_API_TIMEOUT_MS || '3500', 10),
+  HUN_API_TIMEOUT_MS: parseInt(process.env.HUN_API_TIMEOUT_MS || '15000', 10),
   HUN_DEFAULT_EPS: process.env.HUN_DEFAULT_EPS || 'HUN25',
   HOSVITAL_ENABLED: process.env.HOSVITAL_ENABLED !== 'false',
 

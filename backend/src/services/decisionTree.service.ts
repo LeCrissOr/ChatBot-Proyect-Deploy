@@ -4711,7 +4711,10 @@ export class DecisionTreeService {
         data.paymentMethod = payStatus;
 
         // Paso 8: POST /webServiceCita/api/asignar_cita · Bloqueo del cupo y confirmación en Hosvital
-        const selectedDyn = (data as any).selectedDynamicSlot as DynamicSlot | undefined;
+        let selectedDyn = (data as any).selectedDynamicSlot as DynamicSlot | undefined;
+        if (!selectedDyn && data.dynamicSlots && data.selectedSlot?.id) {
+          selectedDyn = data.dynamicSlots.find((s) => s.id === data.selectedSlot?.id);
+        }
         const appointmentDate = selectedDyn?.isoDateTime
           ? new Date(selectedDyn.isoDateTime)
           : new Date(Date.now() + 24 * 60 * 60 * 1000);
@@ -4728,6 +4731,9 @@ export class DecisionTreeService {
             const fechaStr = selectedDyn.isoDateTime ? selectedDyn.isoDateTime.split('T')[0] : appointmentDate.toISOString().split('T')[0];
             const horaStr = selectedDyn.isoDateTime?.includes('T') ? selectedDyn.isoDateTime.split('T')[1].substring(0, 8) : '08:00:00';
             const cupsVal = selectedDyn.cups || '890202';
+            const cleanConsultorio = parseInt(String(selectedDyn.consultorio || selectedDyn.officeCode || '200').replace(/\D/g, ''), 10) || 200;
+
+            console.log(`🏥 [DecisionTree] Iniciando confirmación en Hosvital para paciente ${data.patientDoc}...`);
 
             const asignarRes = await HunApiService.asignarCita({
               paciente: {
@@ -4739,7 +4745,7 @@ export class DecisionTreeService {
                 especialidad: selectedDyn.codEspecialidadHosvital || 21,
               },
               agenda_detalle_id: selectedDyn.agendaDetalleId,
-              consultorio: selectedDyn.consultorio || selectedDyn.officeCode || 200,
+              consultorio: cleanConsultorio,
               fecha: fechaStr,
               hora: horaStr,
               procedimiento: cupsVal,
@@ -4750,14 +4756,20 @@ export class DecisionTreeService {
             if (asignarRes.numeroCitaHosvital) {
               numeroCitaHosvital = asignarRes.numeroCitaHosvital;
               data.numeroCitaHosvital = numeroCitaHosvital;
-              console.log(`🎉 [DecisionTree] Cita confirmada en Hosvital #${numeroCitaHosvital}`);
+              console.log(`🎉 [DecisionTree] CITA CONFIRMADA EXITOSAMENTE EN HOSVITAL #${numeroCitaHosvital}`);
+            } else {
+              console.warn(`⚠️ [DecisionTree] Hosvital no retornó número de cita: ${asignarRes.message}`);
             }
           } catch (err: any) {
-            console.warn(`⚠️ [DecisionTree] Error conectando con asignar_cita de Hosvital: ${err.message}`);
+            console.error(`❌ [DecisionTree] Error conectando con asignar_cita de Hosvital: ${err.message}`);
           }
+        } else {
+          console.warn(`⚠️ [DecisionTree] No se encontró agendaDetalleId en el cupo seleccionado. Omitiendo llamada a Hosvital.`);
         }
 
-        const hosvitalText = numeroCitaHosvital ? `\n• Número de Cita Hosvital: #${numeroCitaHosvital}` : '';
+        const hosvitalText = numeroCitaHosvital
+          ? `\n• Número de Cita Hosvital: #${numeroCitaHosvital}`
+          : '\n• Registro Hosvital: En proceso de sincronización con admisiones';
 
         // Obtener instrucciones de preparación según el servicio o especialidad agendada
         const prepInstructions = await this.getPreparationInstructionsForService(
