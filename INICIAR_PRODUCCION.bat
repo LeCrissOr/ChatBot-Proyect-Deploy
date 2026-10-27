@@ -25,10 +25,10 @@ if not exist "backend\dist\server.js" (
 echo Verificando si el puerto 3001 ya esta activo...
 netstat -ano | findstr /R /C:":3001 .*LISTENING" >nul 2>&1
 if not errorlevel 1 (
-  echo [INFO] El servidor ya se encuentra activo en el puerto 3001.
-  start http://localhost:3001
-  pause
-  exit /b 0
+  echo [INFO] Se detecto un proceso previo activo en el puerto 3001.
+  echo Reiniciando el proceso para aplicar la version actualizada...
+  for /f "tokens=5" %%a in ('netstat -aon ^| findstr /R /C:":3001 .*LISTENING"') do taskkill /f /pid %%a >nul 2>&1
+  timeout /t 2 /nobreak >nul
 )
 
 echo Iniciando Servidor Unificado HUN en http://localhost:3001 ...
