@@ -306,33 +306,42 @@ export class HunApiService {
         return this.pendingAgendaQueries.get(cacheKey)!;
       }
 
-      console.log(`📡 [HunApi] Consultando agenda en endpoint para especialidad #${codEspecialidad} hasta ${targetFechaFinal}...`);
-      const response = await this.getClient().get(CONFIG.HUN_ENDPOINT_AGENDA, {
-        params: {
-          cod_especialidad: codEspecialidad,
-          fecha_final: targetFechaFinal,
-        },
-      });
+      const fetchPromise = (async (): Promise<HunAgendaSlotItem[]> => {
+        try {
+          console.log(`📡 [HunApi] Consultando agenda en endpoint para especialidad #${codEspecialidad} hasta ${targetFechaFinal}...`);
+          const response = await this.getClient().get(CONFIG.HUN_ENDPOINT_AGENDA, {
+            params: {
+              cod_especialidad: codEspecialidad,
+              fecha_final: targetFechaFinal,
+            },
+          });
 
-      const data = response.data;
-      let items: HunAgendaSlotItem[] = [];
-      if (Array.isArray(data)) {
-        items = data;
-      } else if (data && Array.isArray(data.results)) {
-        items = data.results;
-      } else if (data && Array.isArray(data.data)) {
-        items = data.data;
-      } else if (data && typeof data === 'object' && data.codigo_especialidad) {
-        items = [data as HunAgendaSlotItem];
-      }
+          const data = response.data;
+          let items: HunAgendaSlotItem[] = [];
+          if (Array.isArray(data)) {
+            items = data;
+          } else if (data && Array.isArray(data.results)) {
+            items = data.results;
+          } else if (data && Array.isArray(data.data)) {
+            items = data.data;
+          } else if (data && typeof data === 'object' && data.codigo_especialidad) {
+            items = [data as HunAgendaSlotItem];
+          }
 
-      // Evaluar cupos con la API de Parametrización del HUN para filtrar bloqueos y validar cobertura particular
-      if (items.length > 0 && CONFIG.HUN_INTEGRACION_ENABLED) {
-        items = await HunIntegracionService.evaluarCupos(items, { cobertura: 'particular' });
-      }
+          // Evaluar cupos con la API de Parametrización del HUN para filtrar bloqueos y validar cobertura particular
+          if (items.length > 0 && CONFIG.HUN_INTEGRACION_ENABLED) {
+            items = await HunIntegracionService.evaluarCupos(items, { cobertura: 'particular' });
+          }
 
-      this.agendaCache.set(cacheKey, { timestamp: Date.now(), items });
-      return items;
+          this.agendaCache.set(cacheKey, { timestamp: Date.now(), items });
+          return items;
+        } finally {
+          this.pendingAgendaQueries.delete(cacheKey);
+        }
+      })();
+
+      this.pendingAgendaQueries.set(cacheKey, fetchPromise);
+      return await fetchPromise;
     } catch (error: any) {
       console.warn(`⚠️ [HunApi] Error consultando agenda para especialidad #${codEspecialidad}: ${error.message}`);
       return [];
