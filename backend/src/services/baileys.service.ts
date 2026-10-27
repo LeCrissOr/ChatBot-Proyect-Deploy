@@ -46,6 +46,17 @@ class BaileysService {
     if (this.isInitializing) return;
     this.isInitializing = true;
 
+    // Si ya existía un socket anterior, cerrarlo y limpiar listeners para evitar conflictos de sockets
+    if (this.sock) {
+      try {
+        this.sock.ev.removeAllListeners('connection.update');
+        this.sock.ev.removeAllListeners('creds.update');
+        this.sock.ev.removeAllListeners('messages.upsert');
+        this.sock.end(undefined);
+      } catch {}
+      this.sock = null;
+    }
+
     const authFolder = path.join(process.cwd(), 'auth_info_baileys');
     if (!fs.existsSync(authFolder)) {
       fs.mkdirSync(authFolder, { recursive: true });
@@ -127,22 +138,36 @@ class BaileysService {
 
         if (connection === 'close') {
           const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
-          const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+          const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401;
+          const shouldReconnect = !isLoggedOut;
 
           console.log(`⚠️ Conexión de WhatsApp cerrada. Código: ${statusCode}. Reconectando: ${shouldReconnect}`);
           this.status = 'DISCONNECTED';
           socketService.emitWhatsAppStatus(this.getStatus());
 
+          // Limpiar el socket cerrado
+          if (this.sock) {
+            try {
+              this.sock.ev.removeAllListeners('connection.update');
+              this.sock.ev.removeAllListeners('creds.update');
+              this.sock.ev.removeAllListeners('messages.upsert');
+              this.sock.end(undefined);
+            } catch {}
+            this.sock = null;
+          }
+
           if (shouldReconnect) {
             this.isInitializing = false;
             setTimeout(() => this.init(), 3000);
           } else {
-            console.log('❌ Sesión cerrada por el usuario. Limpiando credenciales para nuevo QR...');
-            try {
-              fs.rmSync(authFolder, { recursive: true, force: true });
-            } catch (err) {}
+            console.log('❌ Sesión cerrada o desvinculada por WhatsApp (401). Limpiando credenciales para generar nuevo QR...');
+            this.cleanAuthFolder(authFolder);
+            this.qrCode = null;
+            this.qrDataUrl = null;
+            this.status = 'SCAN_QR';
+            socketService.emitWhatsAppStatus(this.getStatus());
             this.isInitializing = false;
-            setTimeout(() => this.init(), 2000);
+            setTimeout(() => this.init(), 2500);
           }
         }
       });
@@ -203,6 +228,38 @@ class BaileysService {
     } catch (err: any) {
       console.error('Error inicializando Baileys:', err);
       this.isInitializing = false;
+    }
+  }
+
+  /**
+   * Elimina de forma segura y completa los archivos de sesión de Baileys,
+   * sorteando posibles bloqueos de archivos abiertos en Windows.
+   */
+  private cleanAuthFolder(authFolder: string) {
+    if (!fs.existsSync(authFolder)) return;
+    try {
+      const files = fs.readdirSync(authFolder);
+      for (const file of files) {
+        const filePath = path.join(authFolder, file);
+        try {
+          if (fs.statSync(filePath).isDirectory()) {
+            fs.rmSync(filePath, { recursive: true, force: true });
+          } else {
+            fs.unlinkSync(filePath);
+          }
+        } catch (e) {
+          // Si Windows tiene el archivo abierto, truncarlo vacío para que Baileys no intente reusar claves inválidas
+          try {
+            fs.writeFileSync(filePath, '');
+          } catch {}
+        }
+      }
+      try {
+        fs.rmSync(authFolder, { recursive: true, force: true });
+      } catch {}
+      console.log('🧹 [Baileys] Carpeta de sesión auth_info_baileys limpiada exitosamente.');
+    } catch (err: any) {
+      console.warn('⚠️ [Baileys] Aviso al limpiar auth_info_baileys:', err.message);
     }
   }
 
@@ -506,12 +563,22 @@ class BaileysService {
   }
 
   public async disconnect() {
+    const authFolder = path.join(process.cwd(), 'auth_info_baileys');
     if (this.sock) {
-      await this.sock.logout();
+      try {
+        await this.sock.logout();
+      } catch {}
+      try {
+        this.sock.end(undefined);
+      } catch {}
       this.sock = null;
-      this.status = 'DISCONNECTED';
-      socketService.emitWhatsAppStatus(this.getStatus());
     }
+    this.cleanAuthFolder(authFolder);
+    this.status = 'DISCONNECTED';
+    this.qrCode = null;
+    this.qrDataUrl = null;
+    this.connectedPhone = null;
+    socketService.emitWhatsAppStatus(this.getStatus());
   }
 }
 
