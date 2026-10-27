@@ -35,11 +35,54 @@ export class InactivityService {
       const now = Date.now();
 
       for (const conv of conversations) {
-        // Solo monitorear conversaciones activas
+        // 1. Solo monitorear conversaciones activas
         if (conv.status === 'CLOSED' || conv.status === 'AGENT_TAKEN') {
           continue;
         }
 
+        // 2. Si la conversación está en IDLE, en menú principal o ya completó su proceso,
+        // no hay ningún trámite en progreso que requiera respuesta del usuario. NO monitorear inactividad.
+        if (
+          !conv.currentFlow ||
+          conv.currentFlow === 'IDLE' ||
+          conv.currentStep === 'NPS_COMPLETED' ||
+          conv.currentStep === 'SESSION_CLOSED' ||
+          conv.currentStep === 'ROOT_MENU' ||
+          conv.currentStep === 'CANCELLED_BY_USER' ||
+          conv.currentStep === 'POST_CONFIRMATION_OPTIONS' ||
+          conv.flowData?.sessionClosed
+        ) {
+          continue;
+        }
+
+        // 3. Si la conversación está en la encuesta de satisfacción (NPS_SURVEY):
+        // La cita ya está confirmada. Si el paciente no califica en 10 min, cerramos la sesión en silencio sin cancelar su cita.
+        if (conv.currentFlow === 'NPS_SURVEY') {
+          const messages = store.getConversationMessages(conv.id);
+          if (messages.length === 0) continue;
+          const lastMsg = messages[messages.length - 1];
+          if (lastMsg.sender !== 'BOT') continue;
+
+          const timeSinceLastMsg = now - new Date(lastMsg.createdAt).getTime();
+          if (timeSinceLastMsg >= this.warningTimeoutMs) {
+            console.log(`🔒 [Inactividad NPS] Paciente no respondió encuesta NPS. Cerrando sesión silenciosamente (cita confirmada protegida).`);
+            await store.updateConversation(conv.id, {
+              status: 'CLOSED',
+              currentFlow: 'IDLE',
+              currentStep: 'SESSION_CLOSED',
+              flowData: {
+                ...conv.flowData,
+                sessionClosed: true,
+                inactivityWarningSent: false,
+              },
+            });
+            const updated = store.getConversationById(conv.id);
+            socketService.emitConversationUpdated(updated);
+          }
+          continue;
+        }
+
+        // 4. Si el paciente está en medio de un agendamiento / cotización / registro y no ha confirmado:
         const messages = store.getConversationMessages(conv.id);
         if (messages.length === 0) continue;
 
@@ -56,7 +99,7 @@ export class InactivityService {
             await this.sendInactivityWarning(conv);
           }
         } else {
-          // Fase 2: Cierre automatico si ya se envio advertencia y no responde
+          // Fase 2: Cierre automatico si ya se envio advertencia y no responde en 2 minutos adicionales
           const warningSentAt = new Date(conv.flowData.inactivityWarningSentAt || lastMsg.createdAt).getTime();
           const timeSinceWarning = now - warningSentAt;
 
@@ -107,7 +150,8 @@ export class InactivityService {
   }
 
   /**
-   * Cierra la conversacion por inactividad y cancela la cita poniendo el estado en "Cancelado por Usuario"
+   * Cierra la conversacion por inactividad.
+   * IMPORTANTE: Si el paciente ya tiene una cita médica confirmada, la cita SE PROTEGE y NO se cancela.
    */
   public async closeDueToInactivity(
     conv: ConversationData,
@@ -116,12 +160,20 @@ export class InactivityService {
     const contact = conv.contact || store.getContactById(conv.contactId);
     const targetPhone = contact?.phone || conv.flowData?.contactPhone || '';
 
-    const closeMsg =
-      reason === 'USER_CANCEL'
-        ? 'Tu solicitud ha sido cancelada exitosamente a petición tuya. Si deseas realizar otra consulta o agendar una cita en el futuro, escribe "menu". ¡Hasta pronto!'
-        : 'Por inactividad hemos cerrado esta sesión y cancelado la gestión de tu cita en el Hospital Universitario Nacional (HUN). Si deseas iniciar una nueva solicitud, escribe "menu" en cualquier momento. ¡Hasta pronto!';
+    // Verificar si el contacto tiene una cita médica confirmada
+    const confirmedApts = store.getConfirmedAppointmentsByContact(conv.contactId);
+    const hasConfirmedApt = confirmedApts.length > 0 || Boolean(conv.flowData?.appointmentConfirmed || conv.flowData?.hasConfirmedAppointment);
 
-    console.log(`🔒 [Cierre por Inactividad] Cerrando conversacion ${conv.id} para ${targetPhone || 'desconocido'}. Motivo: ${reason}`);
+    let closeMsg: string;
+    if (reason === 'USER_CANCEL') {
+      closeMsg = 'Tu solicitud ha sido cancelada exitosamente a petición tuya. Si deseas realizar otra consulta o agendar una cita en el futuro, escribe "menu". ¡Hasta pronto!';
+    } else if (hasConfirmedApt) {
+      closeMsg = 'Por inactividad hemos finalizado esta sesión de chat. Tu cita médica confirmada en el Hospital Universitario Nacional (HUN) se mantiene programada sin ningún cambio. Si deseas realizar otra consulta, escribe "menu" en cualquier momento. ¡Hasta pronto!';
+    } else {
+      closeMsg = 'Por inactividad hemos cerrado esta sesión y cancelado la gestión de tu cita en el Hospital Universitario Nacional (HUN). Si deseas iniciar una nueva solicitud, escribe "menu" en cualquier momento. ¡Hasta pronto!';
+    }
+
+    console.log(`🔒 [Cierre por Inactividad] Cerrando conversacion ${conv.id} para ${targetPhone || 'desconocido'}. Motivo: ${reason}. Cita confirmada protegida: ${hasConfirmedApt}`);
 
     // 1. Guardar mensaje de cierre y enviar por WhatsApp
     const botMsg = await store.saveMessage(conv.id, 'BOT', closeMsg);
@@ -135,20 +187,23 @@ export class InactivityService {
       if (updated) socketService.emitMessageUpdated(updated);
     }
 
-    // 2. Cerrar conversacion
+    // 2. Cerrar conversación definitivamente. Importante: sessionClosed: true para que no vuelva a evaluarse en bucle.
     await store.updateConversation(conv.id, {
       status: 'CLOSED',
       currentFlow: 'IDLE',
-      currentStep: 'CANCELLED_BY_USER',
+      currentStep: hasConfirmedApt ? 'SESSION_CLOSED' : 'CANCELLED_BY_USER',
       flowData: {
         ...conv.flowData,
         inactivityWarningSent: false,
+        sessionClosed: true,
         cancelledReason: reason,
       },
     });
 
-    // 3. Registrar o actualizar la cita en estado "CANCELLED_BY_USER"
-    await store.cancelAppointmentForContact(conv.contactId, conv.flowData);
+    // 3. SOLO cancelar la cita si NO estaba confirmada previamente y fue por abandono/timeout
+    if (!hasConfirmedApt && reason === 'TIMEOUT') {
+      await store.cancelAppointmentForContact(conv.contactId, conv.flowData);
+    }
 
     // 4. Emitir eventos a dashboard en tiempo real
     const updatedConv = store.getConversationById(conv.id);

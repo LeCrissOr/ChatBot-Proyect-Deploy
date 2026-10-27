@@ -4783,7 +4783,11 @@ export class DecisionTreeService {
           },
           nextFlow: 'IDLE',
           nextStep: 'POST_CONFIRMATION_OPTIONS',
-          updatedData: data,
+          updatedData: {
+            ...data,
+            appointmentConfirmed: true,
+            hasConfirmedAppointment: true,
+          },
           createAppointment: {
             specialty: data.specialty || 'General',
             doctorName: doctorName,
@@ -5158,7 +5162,11 @@ export class DecisionTreeService {
           },
           nextFlow: 'IDLE',
           nextStep: 'POST_CONFIRMATION_OPTIONS',
-          updatedData: data,
+          updatedData: {
+            ...data,
+            appointmentConfirmed: true,
+            hasConfirmedAppointment: true,
+          },
           createAppointment: {
             specialty: 'Referencia Especializada',
             doctorName: doctorName,
@@ -5273,7 +5281,12 @@ export class DecisionTreeService {
         ],
         nextFlow: 'IDLE',
         nextStep: 'NPS_COMPLETED',
-        updatedData: data,
+        status: 'CLOSED',
+        updatedData: {
+          ...data,
+          sessionClosed: true,
+          appointmentConfirmed: true,
+        },
         createNps: {
           rating: score,
           comment: `Calificación baja recibida: ${score}/5`,
@@ -5295,7 +5308,12 @@ export class DecisionTreeService {
       ],
       nextFlow: 'IDLE',
       nextStep: 'NPS_COMPLETED',
-      updatedData: data,
+      status: 'CLOSED',
+      updatedData: {
+        ...data,
+        sessionClosed: true,
+        appointmentConfirmed: true,
+      },
       createNps: {
         rating: score,
         hasPqrs: false,

@@ -1014,6 +1014,7 @@ class DataStore {
           newStep = 'ROOT_MENU';
           newFlowData = {
             ...newFlowData,
+            sessionClosed: false,
             inactivityWarningSent: false,
             sessionClosedAt: undefined,
             cancelledReason: undefined,
@@ -1082,6 +1083,7 @@ class DataStore {
           conv.currentStep = 'ROOT_MENU';
           conv.flowData = {
             ...conv.flowData,
+            sessionClosed: false,
             inactivityWarningSent: false,
             sessionClosedAt: undefined,
             cancelledReason: undefined,
@@ -1281,9 +1283,39 @@ class DataStore {
   public async cancelAppointmentForContact(
     contactId: string,
     flowData?: FlowStateData
-  ): Promise<AppointmentData> {
-    // 1. Buscar si existe una cita para este contacto
-    let apt = this.appointments.find((a) => a.contactId === contactId);
+  ): Promise<AppointmentData | undefined> {
+    // 1. Verificar si el contacto ya tiene una cita médica confirmada: ¡NUNCA CANCELARLA POR INACTIVIDAD!
+    const confirmedStatuses = ['CONFIRMED', 'RESCHEDULED', 'PAID_VIRTUAL', 'PAY_AT_WINDOW', 'CONFIRMED_REFERRAL', 'ATTENDED'];
+    const confirmed = this.appointments.find(
+      (a) =>
+        a.contactId === contactId &&
+        confirmedStatuses.includes((a.status || '').toUpperCase())
+    );
+    if (confirmed) {
+      console.log(`🛡️ [Protección Cita] La cita ${confirmed.id} ya se encuentra confirmada (${confirmed.status}). NO se cancela por inactividad.`);
+      return confirmed;
+    }
+
+    if (this.isPrismaConnected && this.prisma) {
+      const dbConfirmed = await this.prisma.appointment.findFirst({
+        where: {
+          contactId,
+          status: { in: confirmedStatuses },
+        },
+      }).catch(() => null);
+      if (dbConfirmed) {
+        console.log(`🛡️ [Protección Cita DB] La cita ${dbConfirmed.id} ya se encuentra confirmada (${dbConfirmed.status}) en PostgreSQL. NO se cancela por inactividad.`);
+        return {
+          ...dbConfirmed,
+          paymentStatus: dbConfirmed.paymentStatus || '',
+          userTypeCode: '',
+          userTypeName: '',
+        } as unknown as AppointmentData;
+      }
+    }
+
+    // 2. Buscar si existe una cita en borrador o pendiente no confirmada
+    let apt = this.appointments.find((a) => a.contactId === contactId && a.status !== 'CANCELLED_BY_USER');
     if (apt) {
       apt.status = 'CANCELLED_BY_USER';
       apt.paymentStatus = 'Cancelado por Usuario';
@@ -1291,33 +1323,38 @@ class DataStore {
       return apt;
     }
 
-    // 2. Si no existía una cita formalmente creada pero el usuario estaba en proceso, crear el registro cancelado
-    const contact = this.contacts.get(contactId);
-    const cancelledApt: AppointmentData = {
-      id: `apt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      contactId,
-      contactName: contact?.name || flowData?.patientName || 'Paciente Particular',
-      contactPhone: contact?.phone,
-      specialty: flowData?.specialty || 'Consulta Médica Ambulatoria',
-      doctorName: flowData?.selectedSlot?.doctorName || 'Médico HUN (No asignado)',
-      dateTime: new Date(Date.now() + 24 * 60 * 60 * 1000),
-      isFirstTime: flowData?.isFirstTime ?? true,
-      price: flowData?.price || 180000,
-      paymentStatus: 'Cancelado por Usuario',
-      isReferral: !!flowData?.referralCode,
-      status: 'CANCELLED_BY_USER',
-      createdAt: new Date(),
-    };
-    this.appointments.unshift(cancelledApt);
-    if (this.isPrismaConnected && this.prisma) await this.prisma.appointment.create({ data: { id: cancelledApt.id, contactId: cancelledApt.contactId, specialty: cancelledApt.specialty, doctorName: cancelledApt.doctorName, dateTime: cancelledApt.dateTime, isFirstTime: cancelledApt.isFirstTime, price: cancelledApt.price, paymentStatus: cancelledApt.paymentStatus, isReferral: cancelledApt.isReferral, status: cancelledApt.status, createdAt: cancelledApt.createdAt } });
-    return cancelledApt;
+    // 3. Si no existía una cita formal pero estaba en proceso de agendamiento sin confirmar, registrar el intento cancelado
+    if (flowData?.specialty || flowData?.selectedSlot) {
+      const contact = this.contacts.get(contactId);
+      const cancelledApt: AppointmentData = {
+        id: `apt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        contactId,
+        contactName: contact?.name || flowData?.patientName || 'Paciente Particular',
+        contactPhone: contact?.phone,
+        specialty: flowData?.specialty || 'Consulta Médica Ambulatoria',
+        doctorName: flowData?.selectedSlot?.doctorName || 'Médico HUN (No asignado)',
+        dateTime: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        isFirstTime: flowData?.isFirstTime ?? true,
+        price: flowData?.price || 180000,
+        paymentStatus: 'Cancelado por Usuario',
+        isReferral: !!flowData?.referralCode,
+        status: 'CANCELLED_BY_USER',
+        createdAt: new Date(),
+      };
+      this.appointments.unshift(cancelledApt);
+      if (this.isPrismaConnected && this.prisma) await this.prisma.appointment.create({ data: { id: cancelledApt.id, contactId: cancelledApt.contactId, specialty: cancelledApt.specialty, doctorName: cancelledApt.doctorName, dateTime: cancelledApt.dateTime, isFirstTime: cancelledApt.isFirstTime, price: cancelledApt.price, paymentStatus: cancelledApt.paymentStatus, isReferral: cancelledApt.isReferral, status: cancelledApt.status, createdAt: cancelledApt.createdAt } });
+      return cancelledApt;
+    }
+
+    return undefined;
   }
 
   public getConfirmedAppointmentsByContact(contactId: string): AppointmentData[] {
+    const confirmedStatuses = ['CONFIRMED', 'RESCHEDULED', 'PAID_VIRTUAL', 'PAY_AT_WINDOW', 'CONFIRMED_REFERRAL', 'HELD', 'PENDING'];
     return this.appointments.filter(
       (a) =>
         a.contactId === contactId &&
-        (a.status === 'CONFIRMED' || a.status === 'RESCHEDULED' || a.status === 'HELD' || a.status === 'PENDING')
+        confirmedStatuses.includes((a.status || '').toUpperCase())
     );
   }
 
