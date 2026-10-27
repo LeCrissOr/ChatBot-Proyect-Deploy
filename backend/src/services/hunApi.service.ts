@@ -151,6 +151,7 @@ export class HunApiService {
   private static especialidadesCache: HunEspecialidadItem[] | null = null;
   private static lastCacheTime: number = 0;
   private static agendaCache = new Map<string, { timestamp: number; items: HunAgendaSlotItem[] }>();
+  private static pendingAgendaQueries = new Map<string, Promise<HunAgendaSlotItem[]>>();
   private static tarifasCache: { timestamp: number; items: HunTarifaEndpointItem[] } | null = null;
   private static preparacionesCache: { timestamp: number; items: HunPreparacionEndpointItem[] } | null = null;
   private static readonly CACHE_TTL_MS = 1000 * 60 * 15; // 15 minutos de caché
@@ -301,6 +302,11 @@ export class HunApiService {
         return cached.items;
       }
 
+      // Si ya hay una consulta en curso para esta especialidad, reutilizar la misma promesa
+      if (this.pendingAgendaQueries.has(cacheKey)) {
+        return this.pendingAgendaQueries.get(cacheKey)!;
+      }
+
       console.log(`📡 [HunApi] Consultando agenda en endpoint para especialidad #${codEspecialidad} hasta ${targetFechaFinal}...`);
       const response = await this.getClient().get(CONFIG.HUN_ENDPOINT_AGENDA, {
         params: {
@@ -350,12 +356,26 @@ export class HunApiService {
     // Normalizar tipo y documento para Hosvital
     const cleanTipo = normalizeHosvitalDocType(payload.paciente?.tipo);
     const cleanDoc = String(payload.paciente?.documento || '').replace(/\D/g, '');
-    const cleanPayload: HunAsignarCitaPayload = {
+    const cleanPayload: any = {
       ...payload,
       paciente: {
+        ...payload.paciente,
         tipo: cleanTipo,
         documento: cleanDoc,
+        nombre: (payload.paciente as any)?.nombre,
+        primer_nombre: (payload.paciente as any)?.primer_nombre,
+        primer_apellido: (payload.paciente as any)?.primer_apellido,
+        telefono: (payload.paciente as any)?.telefono || (payload.paciente as any)?.celular,
+        celular: (payload.paciente as any)?.celular || (payload.paciente as any)?.telefono,
+        correo: (payload.paciente as any)?.correo || (payload.paciente as any)?.email,
+        email: (payload.paciente as any)?.email || (payload.paciente as any)?.correo,
+        fecha_nacimiento: (payload.paciente as any)?.fecha_nacimiento,
+        direccion: (payload.paciente as any)?.direccion,
+        ciudad: (payload.paciente as any)?.ciudad,
       },
+      usuario: CONFIG.HOSVITAL_MAEDIR_USER || 'agendamiento',
+      clave: CONFIG.HOSVITAL_MAEDIR_PASSWORD || '4g3ndHU**N',
+      contrasena: CONFIG.HOSVITAL_MAEDIR_PASSWORD || '4g3ndHU**N',
     };
 
     // Opción 2: Si está activado SOAP directo (DigitalWare WSASICIME Maestro)
@@ -420,61 +440,65 @@ export class HunApiService {
 
       let numeroCita: number | undefined;
 
-      // 1. Extraer consecutivo de soap.descripcion (ej: "Se ha asignado la cita 123456 con éxito")
-      if (resData?.soap?.descripcion) {
-        const match = resData.soap.descripcion.match(/cita\s*(?:#|no\.?|num\.?)?\s*(\d+)/i)
-          || resData.soap.descripcion.match(/(\d{4,9})/);
-        if (match && match[1]) {
-          numeroCita = parseInt(match[1], 10);
+      const hasError = resData.success === false || Boolean(resData?.error) || (resData?.soap && String(resData?.soap?.codigo) !== '0');
+      const isSuccess = !hasError && (resData.success === true || (resData?.soap?.ok === true && String(resData?.soap?.codigo) === '0'));
+
+      if (isSuccess && !hasError) {
+        // 1. Extraer consecutivo de soap.descripcion (ej: "Se ha asignado la cita 123456 con éxito")
+        if (resData?.soap?.descripcion) {
+          const match = resData.soap.descripcion.match(/cita\s*(?:#|no\.?|num\.?|consecutivo)?\s*(\d+)/i);
+          if (match && match[1]) {
+            numeroCita = parseInt(match[1], 10);
+          }
+        }
+
+        // 2. Extraer de todos los campos directos posibles (PascalCase, camelCase y snake_case)
+        if (!numeroCita) {
+          const candidate =
+            resData?.numero_cita ??
+            resData?.numeroCita ??
+            resData?.NumeroCita ??
+            resData?.Numero_Cita ??
+            resData?.Numero_cita ??
+            resData?.id_cita ??
+            resData?.idCita ??
+            resData?.IdCita ??
+            resData?.cita ??
+            resData?.Cita ??
+            resData?.CITNUM ??
+            resData?.citnum ??
+            resData?.consecutivo ??
+            resData?.Consecutivo ??
+            resData?.data?.Id ??
+            resData?.data?.id ??
+            resData?.data?.NumeroCita ??
+            resData?.data?.numero_cita ??
+            resData?.data?.numeroCita ??
+            resData?.data?.cita ??
+            resData?.data?.consecutivo;
+          if (candidate !== undefined && candidate !== null && !isNaN(Number(candidate)) && Number(candidate) > 0) {
+            numeroCita = parseInt(String(candidate), 10);
+          }
         }
       }
-
-      // 2. Extraer de todos los campos directos posibles (PascalCase, camelCase y snake_case)
-      if (!numeroCita) {
-        const candidate =
-          resData?.numero_cita ??
-          resData?.numeroCita ??
-          resData?.NumeroCita ??
-          resData?.Numero_Cita ??
-          resData?.Numero_cita ??
-          resData?.id_cita ??
-          resData?.idCita ??
-          resData?.IdCita ??
-          resData?.cita ??
-          resData?.Cita ??
-          resData?.CITNUM ??
-          resData?.citnum ??
-          resData?.consecutivo ??
-          resData?.Consecutivo ??
-          resData?.data?.Id ??
-          resData?.data?.id ??
-          resData?.data?.NumeroCita ??
-          resData?.data?.numero_cita ??
-          resData?.data?.numeroCita ??
-          resData?.data?.cita ??
-          resData?.data?.consecutivo;
-        if (candidate !== undefined && candidate !== null && !isNaN(Number(candidate)) && Number(candidate) > 0) {
-          numeroCita = parseInt(String(candidate), 10);
-        }
-      }
-
-      const isSuccess = resData.success !== false && (resData?.soap?.ok !== false) && !resData?.error;
 
       if (numeroCita) {
         console.log(`🎉 [HunApi] ¡CITA ASENTADA EN HOSVITAL! Consecutivo Oficial: #${numeroCita}`);
-      } else if (!isSuccess) {
-        console.error(`❌ [HunApi] HOSVITAL RECHAZÓ LA CITA:`, resData?.message || resData?.soap?.descripcion || 'Rechazo sin descripción');
+      } else if (hasError) {
+        console.error(`❌ [HunApi] HOSVITAL RECHAZÓ LA CITA:`, resData?.soap?.descripcion || resData?.message || 'Rechazo sin descripción');
       } else {
         console.warn(`⚠️ [HunApi] Endpoint respondió HTTP 200 pero no entregó número de cita explícito:`, resData);
       }
 
+      const returnedMessage = resData?.soap?.descripcion || resData?.message || (hasError ? 'Error al asignar cita en Hosvital' : 'Proceso Exitoso');
+
       return {
-        success: isSuccess && Boolean(numeroCita),
+        success: isSuccess && !hasError && Boolean(numeroCita),
         http_status: response.status,
-        message: resData.message || resData?.soap?.descripcion,
+        message: returnedMessage,
         data: resData.data,
         soap: resData.soap,
-        numeroCitaHosvital: numeroCita,
+        numeroCitaHosvital: hasError ? undefined : numeroCita,
       };
     } catch (error: any) {
       console.error(`\n❌ [HunApi] ERROR EN ENDPOINT ASIGNAR CITA HOSVITAL:`);

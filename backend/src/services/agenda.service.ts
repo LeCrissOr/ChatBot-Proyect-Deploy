@@ -330,12 +330,21 @@ export class AgendaService {
             });
             if (matched.length > 0) targetSpecs = matched;
           } else {
-            targetSpecs = specs.slice(0, 12);
+            targetSpecs = specs.slice(0, 4);
           }
 
-          const slotArrays = await Promise.all(
-            targetSpecs.map((sp) => HunApiService.consultarAgendaEspecialidad(sp.codigo, undefined, forceRefresh).catch(() => [] as HunAgendaSlotItem[]))
-          );
+          const slotArrays: HunAgendaSlotItem[][] = [];
+          for (const sp of targetSpecs) {
+            try {
+              const slots = await HunApiService.consultarAgendaEspecialidad(sp.codigo, undefined, forceRefresh);
+              slotArrays.push(slots);
+              if (targetSpecs.length > 1) {
+                await new Promise((r) => setTimeout(r, 100));
+              }
+            } catch {
+              slotArrays.push([]);
+            }
+          }
           const hasAnySlots = slotArrays.some((arr) => arr.length > 0);
           if (hasAnySlots) {
             return this.groupHosvitalSlots(slotArrays);

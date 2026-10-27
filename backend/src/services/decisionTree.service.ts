@@ -4747,7 +4747,17 @@ export class DecisionTreeService {
               paciente: {
                 tipo: docTypeHosvital,
                 documento: docNumClean,
-              },
+                nombre: patientName,
+                primer_nombre: (data as any)?.patientFirstName || patientName.split(' ')[0],
+                primer_apellido: (data as any)?.patientLastName || (patientName.split(' ').length > 1 ? patientName.split(' ')[1] : ''),
+                telefono: (data as any)?.patientPhone || data.phone,
+                celular: (data as any)?.patientPhone || data.phone,
+                correo: (data as any)?.patientEmail || data.email,
+                email: (data as any)?.patientEmail || data.email,
+                fecha_nacimiento: (data as any)?.patientBirthDate,
+                direccion: (data as any)?.patientAddress,
+                ciudad: (data as any)?.patientCity || 'Bogotá',
+              } as any,
               medico: {
                 codigo_medico: selectedDyn.codigoMedico || selectedDyn.doctorCode || 'ME445',
                 especialidad: selectedDyn.codEspecialidadHosvital || 21,
