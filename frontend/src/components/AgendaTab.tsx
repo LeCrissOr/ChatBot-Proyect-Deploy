@@ -83,6 +83,11 @@ export const AgendaTab: React.FC = () => {
   const [drawerItem, setDrawerItem] = useState<MedicalAgendaItem | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Estados de sincronización del Endpoint Hosvital
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'success' | 'error'>('idle');
+  const [syncMessage, setSyncMessage] = useState<string>('');
+  const [lastSyncTime, setLastSyncTime] = useState<string>('');
+
   // Cargar filtros, estadísticas y citas iniciales
   const loadInitialData = async () => {
     try {
@@ -158,6 +163,44 @@ export const AgendaTab: React.FC = () => {
       console.error('Error cargando ausencias:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Sincronización manual en tiempo real con el Endpoint de Hosvital
+  const handleSyncHosvital = async () => {
+    if (syncStatus === 'syncing') return;
+    setSyncStatus('syncing');
+    setSyncMessage('Sincronizando con Hosvital...');
+
+    try {
+      const res = await syncAgendaEndpoint();
+      await loadInitialData();
+      if (viewMode === 'calendar') await loadCalendar();
+      if (viewMode === 'table') await loadTableData();
+      if (viewMode === 'absences') await loadAbsences();
+
+      const timeNow = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      setLastSyncTime(timeNow);
+      setSyncStatus('success');
+
+      const docs = res?.stats?.totalDoctors || stats?.totalDoctors;
+      const schedules = res?.stats?.totalSchedules || stats?.totalSchedules;
+      if (docs && schedules) {
+        setSyncMessage(`¡Sincronizado! (${docs} esp. • ${schedules} turnos)`);
+      } else {
+        setSyncMessage('¡Sincronizado con éxito!');
+      }
+
+      setTimeout(() => {
+        setSyncStatus('idle');
+      }, 4500);
+    } catch (err: any) {
+      console.error('Error sincronizando endpoint Hosvital:', err);
+      setSyncStatus('error');
+      setSyncMessage(err?.response?.data?.error || err?.message || 'Error al sincronizar');
+      setTimeout(() => {
+        setSyncStatus('idle');
+      }, 5000);
     }
   };
 
@@ -411,24 +454,51 @@ export const AgendaTab: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2.5">
+          {lastSyncTime && (
+            <span className="text-[11px] text-slate-500 hidden sm:inline-flex items-center gap-1.5 font-medium bg-slate-50 border border-slate-200/80 px-2.5 py-1.5 rounded-xl">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span>Última sinc: {lastSyncTime}</span>
+            </span>
+          )}
+
           <button
-            onClick={async () => {
-              setLoading(true);
-              try {
-                await syncAgendaEndpoint();
-                await loadInitialData();
-                if (viewMode === 'calendar') await loadCalendar();
-                if (viewMode === 'table') await loadTableData();
-                if (viewMode === 'absences') await loadAbsences();
-              } finally {
-                setLoading(false);
-              }
-            }}
-            disabled={loading}
-            className="px-4 py-2.5 rounded-xl bg-[#051650] hover:bg-[#072173] text-white text-xs font-semibold shadow-xs flex items-center gap-2 transition disabled:opacity-50"
+            onClick={handleSyncHosvital}
+            disabled={syncStatus === 'syncing'}
+            title={syncStatus === 'error' ? syncMessage : undefined}
+            className={`px-4 py-2.5 rounded-xl text-xs font-semibold shadow-xs flex items-center gap-2 transition-all duration-300 ${
+              syncStatus === 'syncing'
+                ? 'bg-blue-800 text-sky-100 cursor-wait ring-2 ring-blue-400/50'
+                : syncStatus === 'success'
+                ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-md ring-2 ring-emerald-400/50'
+                : syncStatus === 'error'
+                ? 'bg-rose-600 hover:bg-rose-700 text-white shadow-md ring-2 ring-rose-400/50'
+                : 'bg-[#051650] hover:bg-[#072173] text-white'
+            }`}
           >
-            <RefreshCw className={`w-4 h-4 text-sky-400 ${loading ? 'animate-spin' : ''}`} />
-            <span>Sincronizar Endpoint Hosvital</span>
+            {syncStatus === 'syncing' && (
+              <>
+                <RefreshCw className="w-4 h-4 text-sky-300 animate-spin" />
+                <span>Sincronizando con Hosvital...</span>
+              </>
+            )}
+            {syncStatus === 'success' && (
+              <>
+                <CheckCircle2 className="w-4 h-4 text-white" />
+                <span>{syncMessage || '¡Sincronizado con Éxito!'}</span>
+              </>
+            )}
+            {syncStatus === 'error' && (
+              <>
+                <AlertTriangle className="w-4 h-4 text-white" />
+                <span>{syncMessage || 'Error al Sincronizar'}</span>
+              </>
+            )}
+            {syncStatus === 'idle' && (
+              <>
+                <RefreshCw className="w-4 h-4 text-sky-400" />
+                <span>Sincronizar Endpoint Hosvital</span>
+              </>
+            )}
           </button>
         </div>
       </div>
