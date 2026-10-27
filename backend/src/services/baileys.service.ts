@@ -379,11 +379,24 @@ class BaileysService {
 
       const cleanText = (text || '').replace(/\*\*/g, '');
       console.log(`📤 [WhatsApp Enviando a ${targetJid}]: "${cleanText.substring(0, 60)}..."`);
-      await this.sock.sendMessage(targetJid, { text: cleanText });
-      console.log(`✅ [WhatsApp Entregado a ${targetJid}]`);
-      return true;
+      try {
+        await this.sock.sendMessage(targetJid, { text: cleanText });
+        console.log(`✅ [WhatsApp Entregado a ${targetJid}]`);
+        return true;
+      } catch (sendErr: any) {
+        console.error(`❌ Error enviando a ${targetJid}:`, sendErr.message || sendErr);
+        // Si falló enviando a un @lid o un JID específico, reintentar al JID telefónico estándar @s.whatsapp.net
+        if (targetJid.includes('@lid') && normalizedPhone && !isLidPhone(normalizedPhone)) {
+          const fallbackJid = `${normalizedPhone}@s.whatsapp.net`;
+          console.log(`🔄 [Baileys Fallback] Reintentando envío a JID telefónico: ${fallbackJid}...`);
+          await this.sock.sendMessage(fallbackJid, { text: cleanText });
+          console.log(`✅ [WhatsApp Entregado con Fallback a ${fallbackJid}]`);
+          return true;
+        }
+        throw sendErr;
+      }
     } catch (err: any) {
-      console.error(`❌ Error enviando mensaje por Baileys a ${phoneOrJid}:`, err.message || err);
+      console.error(`❌ Error definitivo enviando mensaje por Baileys a ${phoneOrJid}:`, err.message || err);
       return false;
     }
   }
