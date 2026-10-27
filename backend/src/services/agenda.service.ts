@@ -335,7 +335,7 @@ export class AgendaService {
               return Number(s.codigo) === 782 || normDesc.includes('infectolog');
             });
             if (targetSpecs.length === 0) {
-              targetSpecs = [{ codigo: 782, descripcion: 'INFECTOLOGIA' }];
+              targetSpecs = [{ codigo: '782', descripcion: 'INFECTOLOGIA' }];
             }
           }
 
