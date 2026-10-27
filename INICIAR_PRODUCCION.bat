@@ -20,6 +20,11 @@ if not exist "backend\node_modules" (
 if not exist "backend\dist\server.js" (
   echo [INFO] Compilacion de produccion no encontrada. Ejecutando INSTALAR_EN_SERVIDOR.bat...
   call "%~dp0INSTALAR_EN_SERVIDOR.bat"
+) else (
+  echo [INFO] Compilando ultimos cambios de TypeScript del Backend...
+  cd /d "%~dp0backend"
+  call npm run build
+  cd /d "%~dp0"
 )
 
 echo Verificando si el puerto 3001 ya esta activo...

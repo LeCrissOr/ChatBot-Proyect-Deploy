@@ -429,10 +429,31 @@ export class HunApiService {
         }
       }
 
-      // 2. Extraer de campos directos del objeto JSON
+      // 2. Extraer de todos los campos directos posibles (PascalCase, camelCase y snake_case)
       if (!numeroCita) {
-        const candidate = resData?.numero_cita || resData?.numeroCita || resData?.id_cita || resData?.cita || resData?.data?.Id || resData?.data?.id || resData?.data?.numero_cita || resData?.data?.numeroCita;
-        if (candidate) {
+        const candidate =
+          resData?.numero_cita ??
+          resData?.numeroCita ??
+          resData?.NumeroCita ??
+          resData?.Numero_Cita ??
+          resData?.Numero_cita ??
+          resData?.id_cita ??
+          resData?.idCita ??
+          resData?.IdCita ??
+          resData?.cita ??
+          resData?.Cita ??
+          resData?.CITNUM ??
+          resData?.citnum ??
+          resData?.consecutivo ??
+          resData?.Consecutivo ??
+          resData?.data?.Id ??
+          resData?.data?.id ??
+          resData?.data?.NumeroCita ??
+          resData?.data?.numero_cita ??
+          resData?.data?.numeroCita ??
+          resData?.data?.cita ??
+          resData?.data?.consecutivo;
+        if (candidate !== undefined && candidate !== null && !isNaN(Number(candidate)) && Number(candidate) > 0) {
           numeroCita = parseInt(String(candidate), 10);
         }
       }
