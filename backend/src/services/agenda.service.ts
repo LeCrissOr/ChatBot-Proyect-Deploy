@@ -329,12 +329,14 @@ export class AgendaService {
               return normDesc.includes(normFilter) || normFilter.includes(normDesc) || String(s.codigo) === specialtyFilter.trim();
             });
           } else {
-            // Consultar prioritariamente Infectología (#21) y las especialidades principales sin disparar 429
-            const priorityCodes = new Set([21, 1, 2, 3, 7, 8, 9, 10, 11, 12, 13, 20]);
-            targetSpecs = specs
-              .filter((s) => priorityCodes.has(Number(s.codigo)))
-              .sort((a, b) => (Number(a.codigo) === 21 ? -1 : Number(b.codigo) === 21 ? 1 : Number(a.codigo) - Number(b.codigo)));
-            if (targetSpecs.length === 0) targetSpecs = specs.slice(0, 6);
+            // Consultar Infectología (código #782 en Hosvital) como especialidad activa principal sin saturar el endpoint (evita HTTP 429)
+            targetSpecs = specs.filter((s) => {
+              const normDesc = normalizeText(s.descripcion);
+              return Number(s.codigo) === 782 || normDesc.includes('infectolog');
+            });
+            if (targetSpecs.length === 0) {
+              targetSpecs = [{ codigo: 782, descripcion: 'INFECTOLOGIA' }];
+            }
           }
 
           const slotArrays: HunAgendaSlotItem[][] = [];
@@ -348,6 +350,17 @@ export class AgendaService {
               // Ignorar error individual de especialidad
             }
           }
+
+          // Si no hay filtro específico, incluir también cualquier otra especialidad que ya haya sido consultada y tenga cupos en caché
+          if (!specialtyFilter || !specialtyFilter.trim()) {
+            const cachedArrays = HunApiService.getCachedSlotArrays();
+            for (const arr of cachedArrays) {
+              if (arr.length > 0 && !slotArrays.includes(arr)) {
+                slotArrays.push(arr);
+              }
+            }
+          }
+
           // Acoplamiento estricto a la agenda disponible del endpoint: devolver únicamente los turnos reales activos
           return this.groupHosvitalSlots(slotArrays);
         }
@@ -665,7 +678,6 @@ export class AgendaService {
    */
   public static async getStats() {
     const schedules = await this.fetchHosvitalSchedules();
-    const filters = await this.getFilters();
     let totalAbsences = 0;
     try {
       totalAbsences = await prisma.medicalAbsence.count();
@@ -673,14 +685,15 @@ export class AgendaService {
 
     const activeDoctorsCount = new Set(schedules.map((s) => s.doctorName)).size;
     const activeSpecsCount = new Set(schedules.map((s) => s.specialtyName)).size;
+    const totalCupos = schedules.reduce((acc, s) => acc + (s.rawSlots?.length || 1), 0);
 
     return {
-      totalSchedules: schedules.length,
-      regularCount: schedules.length,
+      totalSchedules: totalCupos || schedules.length,
+      regularCount: totalCupos || schedules.length,
       adicionalCount: 0,
       totalAbsences,
-      totalDoctors: CONFIG.HOSVITAL_ENABLED ? activeDoctorsCount : Math.max(filters.doctors.length, activeDoctorsCount),
-      totalSpecialties: CONFIG.HOSVITAL_ENABLED ? (activeSpecsCount || filters.specialties.length) : Math.max(filters.specialties.length, 8),
+      totalDoctors: activeDoctorsCount,
+      totalSpecialties: activeSpecsCount,
     };
   }
 

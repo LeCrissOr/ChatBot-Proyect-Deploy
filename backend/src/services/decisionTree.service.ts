@@ -4760,7 +4760,7 @@ export class DecisionTreeService {
               } as any,
               medico: {
                 codigo_medico: selectedDyn.codigoMedico || selectedDyn.doctorCode || 'ME445',
-                especialidad: selectedDyn.codEspecialidadHosvital || 21,
+                especialidad: selectedDyn.codEspecialidadHosvital || 782,
               },
               agenda_detalle_id: selectedDyn.agendaDetalleId,
               consultorio: selectedDyn.consultorio || selectedDyn.officeCode || 200,

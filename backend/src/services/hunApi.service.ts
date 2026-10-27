@@ -173,6 +173,16 @@ export class HunApiService {
     return this.clientInstance;
   }
 
+  public static getCachedSlotArrays(): HunAgendaSlotItem[][] {
+    const result: HunAgendaSlotItem[][] = [];
+    for (const entry of this.agendaCache.values()) {
+      if (entry.items && entry.items.length > 0) {
+        result.push(entry.items);
+      }
+    }
+    return result;
+  }
+
   public static clearCache() {
     this.especialidadesCache = null;
     this.lastCacheTime = 0;
