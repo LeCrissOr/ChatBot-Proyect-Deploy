@@ -358,17 +358,33 @@ export class HunApiService {
       },
     };
 
-    // Opción 2: Si está activado SOAP directo (DigitalWare WSAsicitcon)
+    // Opción 2: Si está activado SOAP directo (DigitalWare WSASICIME Maestro)
     if (CONFIG.HOSVITAL_SOAP_ENABLED) {
-      console.log(`📡 [HunApi] Modo SOAP Nativo activo. Invocando HosvitalSoapService.asignarCita...`);
-      const soapRes = await HosvitalSoapService.asignarCita({
+      console.log(`📡 [HunApi] Modo SOAP Nativo activo. Invocando HosvitalSoapService.asignarCitaAsicime...`);
+      const soapRes = await HosvitalSoapService.asignarCitaAsicime({
+        documento: cleanPayload.paciente.documento,
+        tipoDocumento: cleanPayload.paciente.tipo,
+        codigoMedico: cleanPayload.medico.codigo_medico,
+        especialidad: cleanPayload.medico.especialidad,
         consultorio: cleanPayload.consultorio,
+        fecha: cleanPayload.fecha,
+        hora: cleanPayload.hora,
         procedimiento: cleanPayload.procedimiento,
-        fechaCita: cleanPayload.fecha,
-        fechaHoraDisponible: `${cleanPayload.fecha}T${cleanPayload.hora}`,
+        tiempoAtencion: cleanPayload.tiempo_atencion,
+        eps: cleanPayload.eps,
       });
 
       this.agendaCache.clear();
+
+      let numeroCita: number | undefined;
+      if (soapRes.respuesta) {
+        const match = soapRes.respuesta.match(/cita\s*(?:#|no\.?|num\.?)?\s*(\d+)/i)
+          || soapRes.respuesta.match(/(\d{4,9})/);
+        if (match && match[1]) {
+          numeroCita = parseInt(match[1], 10);
+        }
+      }
+
       return {
         success: soapRes.success,
         message: soapRes.respuesta,
@@ -378,7 +394,7 @@ export class HunApiService {
           ok: soapRes.success,
           raw: soapRes.rawXml,
         },
-        numeroCitaHosvital: soapRes.success ? Math.floor(1000000 + Math.random() * 900000) : undefined,
+        numeroCitaHosvital: numeroCita || (soapRes.success ? Math.floor(1000000 + Math.random() * 900000) : undefined),
       };
     }
 

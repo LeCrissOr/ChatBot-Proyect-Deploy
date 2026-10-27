@@ -1,6 +1,22 @@
 import axios from 'axios';
 import { CONFIG } from '../config';
 
+export interface HosvitalSoapAsicimePayload {
+  empresa?: string;
+  sede?: string;
+  documento: string;
+  tipoDocumento: string; // CC, TI, CE, PA, PPT
+  codigoMedico: string;
+  especialidad: number | string;
+  consultorio: number | string;
+  fecha: string; // YYYY-MM-DD
+  hora: string; // HH:mm:ss
+  procedimiento: string; // CUPS
+  eps?: string; // HUN25, HUN22
+  tiempoAtencion?: number;
+  usuario?: string;
+}
+
 export interface HosvitalSoapAsignarPayload {
   empresa?: string;
   sede?: string;
@@ -39,6 +55,7 @@ export interface HosvitalSoapResponse {
  * 2. WSCancita (Cancelación de Citas - Modo: UPD)
  */
 export class HosvitalSoapService {
+  private static readonly ASICIME_URL = `${CONFIG.HOSVITAL_SOAP_BASE_URL}${CONFIG.HOSVITAL_SOAP_ASICIME_PATH}`;
   private static readonly ASICITCON_URL = `${CONFIG.HOSVITAL_SOAP_BASE_URL}${CONFIG.HOSVITAL_SOAP_ASICITCON_PATH}`;
   private static readonly CANCITA_URL = `${CONFIG.HOSVITAL_SOAP_BASE_URL}${CONFIG.HOSVITAL_SOAP_CANCITA_PATH}`;
 
@@ -74,6 +91,84 @@ export class HosvitalSoapService {
   /**
    * Método asignarCita (WSASICITCON) - Modo: ASI
    */
+  /**
+   * Método Maestro WSASICIME.ASIGNAR_CITA (Asignación Directa de Cita con Paciente en Hosvital)
+   */
+  public static async asignarCitaAsicime(params: HosvitalSoapAsicimePayload): Promise<HosvitalSoapResponse> {
+    const empresa = params.empresa || CONFIG.HOSVITAL_EMPRESA || '1';
+    const sede = params.sede || CONFIG.HOSVITAL_SEDE || '001';
+    const documento = String(params.documento || '').replace(/\D/g, '');
+    const tipoDocumento = (params.tipoDocumento || 'CC').trim().toUpperCase();
+    const codigoMedico = (params.codigoMedico || 'ME445').trim();
+    const especialidad = String(params.especialidad || '21').trim();
+    const consultorio = String(params.consultorio || '200').trim();
+    const fecha = params.fecha;
+    const hora = params.hora.includes(':') ? (params.hora.length === 5 ? `${params.hora}:00` : params.hora) : '08:00:00';
+    const procedimiento = (params.procedimiento || '890202').trim();
+    const usuario = params.usuario || CONFIG.HOSVITAL_MAEDIR_USER || 'Hosvital';
+    const eps = params.eps || CONFIG.HUN_DEFAULT_EPS || 'HUN22';
+    const tiempoAtencion = params.tiempoAtencion || 20;
+
+    const xmlPayload = `<?xml version="1.0" encoding="utf-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:hos="Hosvital">
+   <soapenv:Header/>
+   <soapenv:Body>
+      <hos:WSASICIME.ASIGNAR_CITA>
+         <hos:To_asicime_con>
+            <hos:TO_ASICIME_CON.TO_ASICIME_CONIt>
+               <hos:EMPCOD>${empresa}</hos:EMPCOD>
+               <hos:MCDPTO>${sede}</hos:MCDPTO>
+               <hos:MPCEDU>${documento}</hos:MPCEDU>
+               <hos:MPTDOC>${tipoDocumento}</hos:MPTDOC>
+               <hos:MMCODM>${codigoMedico}</hos:MMCODM>
+               <hos:MECODE>${especialidad}</hos:MECODE>
+               <hos:CONSCOD>${consultorio}</hos:CONSCOD>
+               <hos:FECHA>${fecha}</hos:FECHA>
+               <hos:HORA>${hora}</hos:HORA>
+               <hos:CITPRO>${procedimiento}</hos:CITPRO>
+               <hos:CITTIPORI>HC</hos:CITTIPORI>
+               <hos:PPPTIPACT>I</hos:PPPTIPACT>
+               <hos:CITNUM></hos:CITNUM>
+               <hos:INDPRPAN></hos:INDPRPAN>
+               <hos:MSUser>${usuario}</hos:MSUser>
+               <hos:MENNIT>${eps}</hos:MENNIT>
+               <hos:MMTieAte>${tiempoAtencion}</hos:MMTieAte>
+            </hos:TO_ASICIME_CON.TO_ASICIME_CONIt>
+         </hos:To_asicime_con>
+      </hos:WSASICIME.ASIGNAR_CITA>
+   </soapenv:Body>
+</soapenv:Envelope>`;
+
+    console.log(`\n======================================================`);
+    console.log(`📡 [HosvitalSoap] ENVIANDO ASIGNACIÓN DE CITA MAESTRA (WSASICIME)`);
+    console.log(`📍 URL: ${this.ASICIME_URL}`);
+    console.log(`🏷️ SoapAction: Hosvitalaction/AWSASICIME.ASIGNAR_CITA`);
+    console.log(`📄 XML Enviado:\n${xmlPayload}`);
+    console.log(`======================================================`);
+
+    try {
+      const response = await axios.post(this.ASICIME_URL, xmlPayload, {
+        headers: {
+          'Content-Type': 'text/xml; charset=utf-8',
+          SOAPAction: 'Hosvitalaction/AWSASICIME.ASIGNAR_CITA',
+        },
+        timeout: CONFIG.HUN_API_TIMEOUT_MS || 8000,
+      });
+
+      console.log(`📥 [HosvitalSoap] Respuesta HTTP ${response.status} de WSASICIME:`);
+      console.log(response.data);
+
+      return this.parseAsicitconResponse(response.data);
+    } catch (error: any) {
+      console.error(`❌ [HosvitalSoap] Error en llamada SOAP WSASICIME:`, error.response?.data || error.message);
+      return {
+        success: false,
+        error: error.message,
+        rawXml: error.response?.data,
+      };
+    }
+  }
+
   public static async asignarCita(params: HosvitalSoapAsignarPayload): Promise<HosvitalSoapResponse> {
     const empresa = params.empresa || CONFIG.HOSVITAL_EMPRESA || '1';
     const sede = params.sede || CONFIG.HOSVITAL_SEDE || '001';
