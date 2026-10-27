@@ -4771,7 +4771,7 @@ export class DecisionTreeService {
               eps: data.epsCode || CONFIG.HUN_DEFAULT_EPS || 'HUN25',
             });
 
-            if (asignarRes.numeroCitaHosvital) {
+            if (asignarRes.success === true && Number.isSafeInteger(asignarRes.numeroCitaHosvital) && Number(asignarRes.numeroCitaHosvital) > 0) {
               numeroCitaHosvital = asignarRes.numeroCitaHosvital;
               data.numeroCitaHosvital = numeroCitaHosvital;
               console.log(`🎉 [DecisionTree] Cita asentada exitosamente en Hosvital #${numeroCitaHosvital}`);
@@ -4787,7 +4787,7 @@ export class DecisionTreeService {
 
         // REGLA ESTRICTA DE PRODUCCIÓN: Si Hosvital está habilitado y NO devolvió número oficial de cita,
         // NUNCA confirmar la cita localmente ni engañar al paciente o a la base de datos.
-        if (CONFIG.HOSVITAL_ENABLED && !numeroCitaHosvital) {
+        if (!numeroCitaHosvital) {
           console.warn(`❌ [DecisionTree] Asignación en Hosvital no completada. Motivo: ${hosvitalErrorMsg || 'Rechazo'}. NO se confirma cita en BD.`);
           return {
             replyMessages: [
