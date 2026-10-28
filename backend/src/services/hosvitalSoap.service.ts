@@ -269,6 +269,8 @@ export class HosvitalSoapService {
         <ns1:CONSECUTIVOCANCELACION>${consecutivo}</ns1:CONSECUTIVOCANCELACION>
       </ns1:To_cancit>
       <ns1:To_creaut xmlns:ns1="Hosvital">
+        <ns1:EMPCOD>${empresa}</ns1:EMPCOD>
+        <ns1:MCDPTO>${sede}</ns1:MCDPTO>
         <ns1:USUARIO>${usuario}</ns1:USUARIO>
         <ns1:CONTRASENA>${contrasena}</ns1:CONTRASENA>
       </ns1:To_creaut>

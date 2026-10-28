@@ -408,19 +408,25 @@ export class WebhookController {
         socketService.emitContactsUpdated(store.getAllContacts());
 
         // Si la cita tenía ID oficial de Hosvital, sincronizar cancelación con la API del hospital
-        if (cancelled.referralCode && cancelled.referralCode.startsWith('HOSVITAL-')) {
-          const numCita = parseInt(cancelled.referralCode.replace('HOSVITAL-', ''), 10);
-          if (!isNaN(numCita)) {
-            HunApiService.cancelarCita({
-              cita: numCita,
-              tipo_documento: contact.documentType || 'CC',
-              documento: contact.documentId || '79810144',
-            }).then((resp) => {
-              console.log(`📡 [Hosvital] Solicitud de cancelación enviada para cita #${numCita}:`, resp.message);
-            }).catch((err) => {
-              console.warn(`⚠️ [Hosvital] Error enviando cancelación a Hosvital:`, err.message);
-            });
-          }
+        const numCita =
+          cancelled.numeroCitaHosvital ||
+          (cancelled.referralCode && cancelled.referralCode.startsWith('HOSVITAL-')
+            ? parseInt(cancelled.referralCode.replace('HOSVITAL-', ''), 10)
+            : undefined);
+
+        if (numCita && !isNaN(numCita)) {
+          const docType = contact.documentType || (conversation?.flowData as any)?.documentType || 'CC';
+          const docId = contact.documentId || (conversation?.flowData as any)?.documentNumber || (conversation?.flowData as any)?.patientDocument || '79810144';
+          HunApiService.cancelarCita({
+            cita: numCita,
+            tipo_documento: docType,
+            documento: docId,
+            motivoCancelacion: '1',
+          }).then((resp) => {
+            console.log(`📡 [Hosvital] Solicitud de cancelación enviada para cita #${numCita}:`, resp.message);
+          }).catch((err) => {
+            console.warn(`⚠️ [Hosvital] Error enviando cancelación a Hosvital:`, err.message);
+          });
         }
       }
     }

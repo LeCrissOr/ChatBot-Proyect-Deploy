@@ -23,6 +23,14 @@ function service(response, enabled = true) {
     } }) },
     '../config': { CONFIG: config },
     './hunIntegracion.service': {},
+    './hosvitalSoap.service': {
+      HosvitalSoapService: {
+        cancelarCita: async (p) => {
+          calls.push({ soap: true, payload: p });
+          return { success: true, codigo: 0, respuesta: 'Cancelación exitosa' };
+        },
+      },
+    },
   };
   const exports = {};
   const code = ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src/services/hunApi.service.ts'), 'utf8'), {
@@ -73,8 +81,11 @@ test('disabled integration fails without inventing a number or making a request'
   assert.equal(result.numeroCitaHosvital, undefined);
   assert.equal(calls.length, 0);
 });
-test('cancellation also uses REST despite obsolete SOAP flag', async () => {
+test('cancellation uses WSCancita SOAP service according to DigitalWare specification', async () => {
   const { api, calls } = service({ success: true });
-  assert.equal((await api.cancelarCita({ cita: 12345, tipo_documento: 'CC', documento: '000' })).success, true);
-  assert.equal(calls[0].url, '/webServiceCancelarCitaH/cancelar_cita');
+  const result = await api.cancelarCita({ cita: 12345, tipo_documento: 'CC', documento: '000' });
+  assert.equal(result.success, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].soap, true);
+  assert.equal(calls[0].payload.cita, 12345);
 });
