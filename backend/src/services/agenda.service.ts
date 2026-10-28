@@ -119,13 +119,198 @@ export interface StructuredScheduleItem {
   activity: string;
   activeDates: string[];
   rawSlots: any[];
+  availableCount?: number;
+  occupiedCount?: number;
+  totalSlotsCount?: number;
 }
 
 export class AgendaService {
   /**
-   * Agrupa cupos devueltos por el endpoint de Hosvital en turnos estructurados
+   * Registro en memoria de espacios marcados como ocupados (por confirmación o por rechazo de Hosvital al estar tomado)
    */
-  private static groupHosvitalSlots(slotArrays: HunAgendaSlotItem[][]): StructuredScheduleItem[] {
+  private static occupiedSlotsMemoryMap = new Map<string, { reason: string; patientName?: string; timestamp: number }>();
+
+  public static markSlotAsOccupied(
+    isoDateTimeOrDate: string,
+    doctorName?: string,
+    doctorCode?: string,
+    patientName?: string,
+    reason: string = 'Ocupado en Hosvital'
+  ) {
+    if (!isoDateTimeOrDate) return;
+    const parts = isoDateTimeOrDate.split('T');
+    const datePart = parts[0]?.trim();
+    const timePart = (parts[1] || '08:00').substring(0, 5);
+    if (!datePart) return;
+
+    const cleanDoc = this.cleanDoctorNameForMatch(doctorName || '');
+    const cleanCode = (doctorCode || '').trim().toUpperCase();
+    const entry = { reason, patientName, timestamp: Date.now() };
+
+    if (cleanDoc) this.occupiedSlotsMemoryMap.set(`${datePart}|${timePart}|${cleanDoc}`, entry);
+    if (cleanCode) this.occupiedSlotsMemoryMap.set(`${datePart}|${timePart}|${cleanCode}`, entry);
+    this.occupiedSlotsMemoryMap.set(`${datePart}|${timePart}`, entry);
+
+    socketService.emitAgendaUpdated({ timestamp: new Date().toISOString() });
+  }
+
+  public static clearOccupiedSlotsMemory() {
+    this.occupiedSlotsMemoryMap.clear();
+  }
+
+  /**
+   * Obtiene el mapa consolidado de espacios ocupados (PostgreSQL + Store + Memoria Hosvital)
+   */
+  public static async getOccupiedSlotsMap(): Promise<Map<string, { reason: string; patientName?: string }>> {
+    const map = new Map<string, { reason: string; patientName?: string }>();
+
+    for (const [k, v] of this.occupiedSlotsMemoryMap.entries()) {
+      map.set(k, { reason: v.reason, patientName: v.patientName });
+    }
+
+    const addAptToMap = (dateTime: Date | string, docName?: string, docId?: string, patName?: string) => {
+      const dt = new Date(dateTime);
+      if (isNaN(dt.getTime())) return;
+      const dateParts = bogotaDateParts(dt);
+      const dateStr = `${dateParts.year}-${dateParts.month}-${dateParts.day}`;
+      const timeStr = new Intl.DateTimeFormat('en-GB', {
+        timeZone: BOGOTA_TIME_ZONE,
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).format(dt);
+      const cleanDoc = this.cleanDoctorNameForMatch(docName || '');
+      const cleanCode = (docId || '').trim().toUpperCase();
+      const info = { reason: 'Cita Agendada', patientName: patName || 'Paciente Particular' };
+      if (cleanDoc) map.set(`${dateStr}|${timeStr}|${cleanDoc}`, info);
+      if (cleanCode) map.set(`${dateStr}|${timeStr}|${cleanCode}`, info);
+      map.set(`${dateStr}|${timeStr}`, info);
+    };
+
+    try {
+      const dbApts = await prisma.appointment.findMany({
+        where: {
+          status: { in: ['CONFIRMED', 'HELD', 'PAID_VIRTUAL', 'PAY_AT_WINDOW', 'PENDING'] },
+        },
+        include: { contact: true },
+      });
+      for (const a of dbApts) {
+        addAptToMap(a.dateTime, a.doctorName, a.doctorId || undefined, a.contact?.name || undefined);
+      }
+    } catch {}
+
+    try {
+      const memApts = store.getAllAppointments().filter((a) =>
+        ['CONFIRMED', 'HELD', 'PAID_VIRTUAL', 'PAY_AT_WINDOW', 'PENDING'].includes(a.status)
+      );
+      for (const a of memApts) {
+        addAptToMap(a.dateTime, a.doctorName, a.doctorId || undefined, a.contactName || undefined);
+      }
+    } catch {}
+
+    return map;
+  }
+
+  /**
+   * Verifica si un espacio específico de Hosvital está ocupado o no disponible
+   */
+  public static isSlotOccupied(
+    s: HunAgendaSlotItem,
+    occupiedMap: Map<string, { reason: string; patientName?: string }>
+  ): { occupied: boolean; patientName?: string; reason?: string } {
+    const fecha = (s.fecha_atencion || '').trim();
+    const hora = (s.hora_inicial || '08:00:00').substring(0, 5);
+    const cleanDoc = this.cleanDoctorNameForMatch(s.nombre_medico || '');
+    const cleanCode = String(s.codigo_medico || '').trim().toUpperCase();
+
+    // 1. Verificar estado reportado por Hosvital ('8' = Disponible en Hosvital)
+    const estadoStr = s.estado !== undefined && s.estado !== null ? String(s.estado).trim().toLowerCase() : '8';
+    if (estadoStr && estadoStr !== '8' && estadoStr !== 'disponible' && estadoStr !== 'libre') {
+      return { occupied: true, reason: 'Ocupado en Hosvital' };
+    }
+    if (s.autogestionable && String(s.autogestionable).trim().toLowerCase() === 'no') {
+      return { occupied: true, reason: 'Bloqueado / No autogestionable' };
+    }
+
+    // 2. Verificar contra citas agendadas o rechazadas en memoria/BD
+    const byDoc = cleanDoc ? occupiedMap.get(`${fecha}|${hora}|${cleanDoc}`) : undefined;
+    if (byDoc) return { occupied: true, patientName: byDoc.patientName, reason: byDoc.reason };
+
+    const byCode = cleanCode ? occupiedMap.get(`${fecha}|${hora}|${cleanCode}`) : undefined;
+    if (byCode) return { occupied: true, patientName: byCode.patientName, reason: byCode.reason };
+
+    return { occupied: false };
+  }
+
+  /**
+   * Extrae el agenda_detalle_id real (anidado dentro de s.cups[i].agenda_detalle_id en Hosvital) y los códigos CUPS limpios
+   */
+  public static extractSlotCupsAndDetalleId(
+    s: HunAgendaSlotItem,
+    isFirstTime: boolean = true
+  ): {
+    agendaDetalleId: number;
+    cups: string;
+    cupsOptions: Array<{ codigo: string; agenda_detalle_id: number; descripcion?: string | null }>;
+  } {
+    const cupsOptions: Array<{ codigo: string; agenda_detalle_id: number; descripcion?: string | null }> = [];
+
+    if (Array.isArray(s.cups)) {
+      for (const c of s.cups) {
+        if (!c) continue;
+        if (c.autogestionable && String(c.autogestionable).trim().toLowerCase() === 'no') continue;
+        const cleanCodigo = String(c.codigo || '').trim();
+        const detId = Number(
+          c.agenda_detalle_id ||
+          c.id_agenda_detalle ||
+          s.id_agenda_detalle ||
+          s.idAgendaDetalle ||
+          s.agenda_detalle_id ||
+          0
+        );
+        if (cleanCodigo) {
+          cupsOptions.push({
+            codigo: cleanCodigo,
+            agenda_detalle_id: detId,
+            descripcion: c.descripcion || null,
+          });
+        }
+      }
+    }
+
+    let chosen = cupsOptions[0];
+    if (cupsOptions.length > 1) {
+      // En CUPS Colombia: 8902xx = Consulta de Primera Vez, 8903xx = Consulta de Control/Seguimiento
+      const preferredPrefix = isFirstTime ? '8902' : '8903';
+      const matched = cupsOptions.find((c) => c.codigo.startsWith(preferredPrefix));
+      if (matched) chosen = matched;
+    }
+
+    const fallbackDetalleId = Number(
+      s.id_agenda_detalle ||
+      s.idAgendaDetalle ||
+      s.agenda_detalle_id ||
+      (s as any).id ||
+      (s as any).Id ||
+      (s as any).id_detalle ||
+      0
+    );
+    const fallbackCups = typeof s.cups === 'string' && s.cups.trim() ? s.cups.trim() : '890202';
+
+    return {
+      agendaDetalleId: chosen?.agenda_detalle_id || fallbackDetalleId,
+      cups: chosen?.codigo || fallbackCups,
+      cupsOptions,
+    };
+  }
+
+  /**
+   * Agrupa cupos devueltos por el endpoint de Hosvital en turnos estructurados marcando Disponibles vs Ocupados
+   */
+  private static groupHosvitalSlots(
+    slotArrays: HunAgendaSlotItem[][],
+    occupiedMap: Map<string, { reason: string; patientName?: string }> = new Map()
+  ): StructuredScheduleItem[] {
     const grouped = new Map<string, {
       id: string;
       specialtyCode: string;
@@ -158,6 +343,17 @@ export class AgendaService {
         const end = (s.hora_final || '12:00:00').substring(0, 5);
         const freq = Number(s.tiempo_intervalo) || 20;
 
+        const extracted = this.extractSlotCupsAndDetalleId(s, true);
+        const occCheck = this.isSlotOccupied(s, occupiedMap);
+        const enrichedSlot: HunAgendaSlotItem = {
+          ...s,
+          id_agenda_detalle: extracted.agendaDetalleId,
+          agenda_detalle_id: extracted.agendaDetalleId,
+          occupied: occCheck.occupied,
+          statusLabel: occCheck.occupied ? 'OCUPADO' : 'DISPONIBLE',
+          patientName: occCheck.patientName || (occCheck.occupied ? occCheck.reason : undefined),
+        };
+
         const key = `${specCode}-${docCode}-${office}-${dayOfWeek}`;
         const existing = grouped.get(key);
         if (!existing) {
@@ -176,21 +372,28 @@ export class AgendaService {
             scheduleType: 'REGULAR',
             activity: s.descripcion_cups || 'CONSULTA EXTERNA HOSVITAL',
             activeDates: new Set([s.fecha_atencion]),
-            rawSlots: [s],
+            rawSlots: [enrichedSlot],
           });
         } else {
           existing.activeDates.add(s.fecha_atencion);
           if (start < existing.startTime) existing.startTime = start;
           if (end > existing.endTime) existing.endTime = end;
-          existing.rawSlots.push(s);
+          existing.rawSlots.push(enrichedSlot);
         }
       }
     }
 
-    return Array.from(grouped.values()).map((g) => ({
-      ...g,
-      activeDates: Array.from(g.activeDates).sort(),
-    }));
+    return Array.from(grouped.values()).map((g) => {
+      const occupiedCount = g.rawSlots.filter((r) => r.occupied).length;
+      const availableCount = g.rawSlots.length - occupiedCount;
+      return {
+        ...g,
+        activeDates: Array.from(g.activeDates).sort(),
+        availableCount,
+        occupiedCount,
+        totalSlotsCount: g.rawSlots.length,
+      };
+    });
   }
 
   /**
@@ -361,8 +564,9 @@ export class AgendaService {
             }
           }
 
-          // Acoplamiento estricto a la agenda disponible del endpoint: devolver únicamente los turnos reales activos
-          return this.groupHosvitalSlots(slotArrays);
+          // Acoplamiento estricto a la agenda disponible del endpoint: devolver únicamente los turnos reales activos con estado Disponible/Ocupado
+          const occupiedMap = await this.getOccupiedSlotsMap();
+          return this.groupHosvitalSlots(slotArrays, occupiedMap);
         }
         return [];
       } catch (err) {
@@ -480,16 +684,31 @@ export class AgendaService {
       sch.activeDates.forEach((date) => {
         if (date.startsWith(monthPrefix)) {
           if (!daysMap[date]) daysMap[date] = { events: [], absences: [], appointments: [] };
+          const daySlots = Array.isArray(sch.rawSlots)
+            ? sch.rawSlots.filter((r: any) => r.fecha_atencion === date)
+            : [];
+          const dayOccupiedCount = daySlots.filter((r: any) => r.occupied).length;
+          const dayAvailableCount = daySlots.length - dayOccupiedCount;
           daysMap[date].events.push({
             id: sch.id,
+            specialtyCode: sch.specialtyCode,
             specialtyName: sch.specialtyName,
+            doctorCode: sch.doctorCode,
             doctorName: sch.doctorName,
             officeCode: sch.officeCode,
+            dayOfWeek: sch.dayOfWeek,
             startTime: sch.startTime,
             endTime: sch.endTime,
             frequencyMinutes: sch.frequencyMinutes,
             scheduleType: sch.scheduleType,
             modality: sch.modality,
+            activity: sch.activity,
+            activeDates: sch.activeDates,
+            rawSlots: sch.rawSlots,
+            daySlots,
+            availableCount: daySlots.length > 0 ? dayAvailableCount : sch.availableCount,
+            occupiedCount: daySlots.length > 0 ? dayOccupiedCount : sch.occupiedCount,
+            totalSlotsCount: daySlots.length > 0 ? daySlots.length : sch.totalSlotsCount,
           });
         }
       });
@@ -845,7 +1064,10 @@ export class AgendaService {
         });
 
         if (matchedSpec) {
-          const hosvitalSlots = await HunApiService.consultarAgendaEspecialidad(matchedSpec.codigo);
+          const [hosvitalSlots, occupiedMap] = await Promise.all([
+            HunApiService.consultarAgendaEspecialidad(matchedSpec.codigo),
+            this.getOccupiedSlotsMap(),
+          ]);
           if (hosvitalSlots && hosvitalSlots.length > 0) {
             const validSlots: DynamicSlot[] = [];
 
@@ -855,6 +1077,15 @@ export class AgendaService {
               const timeRaw = (s.hora_inicial || '08:00:00').substring(0, 5);
               const slotUtc = bogotaLocalToUtc(s.fecha_atencion, timeRaw);
               if (slotUtc <= now) continue;
+
+              // Excluir cualquier espacio ocupado o no disponible para que NUNCA se ofrezca al paciente
+              const occCheck = this.isSlotOccupied(s, occupiedMap);
+              if (occCheck.occupied) continue;
+
+              // Extraer el agenda_detalle_id real desde s.cups[i].agenda_detalle_id
+              const extracted = this.extractSlotCupsAndDetalleId(s, true);
+              const realDetalleId = extracted.agendaDetalleId;
+              if (!realDetalleId || realDetalleId <= 0) continue;
 
               const [h, m] = timeRaw.split(':').map(Number);
               const dateObj = new Date(`${s.fecha_atencion}T12:00:00Z`);
@@ -866,14 +1097,9 @@ export class AgendaService {
               const consultorioStr = s.numero_consultorio ? String(s.numero_consultorio).trim() : '200';
               const formattedDoctor = AgendaService.formatDoctorName(s.nombre_medico || 'Especialista HUN');
               const specName = s.nombre_especialidad?.trim() || matchedSpec.descripcion;
-              const cupsVal = Array.isArray(s.cups)
-                ? (s.cups[0]?.codigo || '890202')
-                : (typeof s.cups === 'string' ? s.cups : '890202');
-
-              const realDetalleId = Number(s.id_agenda_detalle || s.idAgendaDetalle || (s as any).id || (s as any).Id || (s as any).id_detalle || 0);
 
               validSlots.push({
-                id: `hosvital-${realDetalleId || idx}-${Date.now()}`,
+                id: `hosvital-${realDetalleId}-${s.fecha_atencion}-${timeRaw}`,
                 doctorName: formattedDoctor,
                 doctorCode: s.codigo_medico?.trim() || 'ME445',
                 officeCode: consultorioStr,
@@ -882,7 +1108,8 @@ export class AgendaService {
                 isoDateTime: `${s.fecha_atencion}T${s.hora_inicial || '08:00:00'}`,
                 agendaDetalleId: realDetalleId,
                 codigoMedico: s.codigo_medico?.trim() || 'ME445',
-                cups: cupsVal,
+                cups: extracted.cups,
+                cupsOptions: extracted.cupsOptions,
                 consultorio: consultorioStr,
                 tiempoAtencion: Number(s.tiempo_intervalo) || 20,
                 codEspecialidadHosvital: Number(matchedSpec.codigo),

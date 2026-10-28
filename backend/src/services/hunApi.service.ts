@@ -24,8 +24,11 @@ export interface HunCitaDocumentoItem {
 }
 
 export interface HunCupsItem {
+  agenda_detalle_id?: number;
+  id_agenda_detalle?: number;
+  autogestionable?: string;
   codigo: string;
-  descripcion: string;
+  descripcion: string | null;
 }
 
 export interface HunAgendaSlotItem {
@@ -41,10 +44,14 @@ export interface HunAgendaSlotItem {
   hora_inicial: string; // HH:MM:SS
   id_agenda_detalle?: number;
   idAgendaDetalle?: number;
+  agenda_detalle_id?: number;
   nombre_especialidad: string;
   nombre_medico: string;
   numero_consultorio: string | number;
   tiempo_intervalo?: string | number;
+  occupied?: boolean;
+  statusLabel?: 'DISPONIBLE' | 'OCUPADO';
+  patientName?: string;
 }
 
 

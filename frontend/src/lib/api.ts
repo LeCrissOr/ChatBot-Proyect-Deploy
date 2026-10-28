@@ -392,6 +392,19 @@ export const clearTickets = async (
 // AGENDA MÉDICA INSTITUCIONAL HUN (2026)
 // ==========================================
 
+export interface MedicalAgendaSlotItem {
+  fecha_atencion: string;
+  hora_inicial: string;
+  hora_final: string;
+  numero_consultorio?: string | number;
+  agenda_detalle_id?: number;
+  id_agenda_detalle?: number;
+  occupied?: boolean;
+  statusLabel?: 'DISPONIBLE' | 'OCUPADO';
+  patientName?: string;
+  cups?: any;
+}
+
 export interface MedicalAgendaItem {
   id: string;
   specialtyCode?: string;
@@ -409,8 +422,13 @@ export interface MedicalAgendaItem {
   observations?: string;
   scheduleType: 'REGULAR' | 'ADICIONAL';
   activeDates: string[];
-  createdAt: string;
-  updatedAt: string;
+  rawSlots?: MedicalAgendaSlotItem[];
+  daySlots?: MedicalAgendaSlotItem[];
+  availableCount?: number;
+  occupiedCount?: number;
+  totalSlotsCount?: number;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface MedicalAbsenceItem {
@@ -442,14 +460,24 @@ export interface AgendaFilters {
 
 export interface CalendarEventDay {
   id: string;
+  specialtyCode?: string;
   specialtyName: string;
+  doctorCode?: string;
   doctorName: string;
   officeCode?: string;
+  dayOfWeek?: string;
   startTime: string;
   endTime: string;
   frequencyMinutes: number;
   scheduleType: string;
   modality?: string;
+  activity?: string;
+  activeDates?: string[];
+  rawSlots?: MedicalAgendaSlotItem[];
+  daySlots?: MedicalAgendaSlotItem[];
+  availableCount?: number;
+  occupiedCount?: number;
+  totalSlotsCount?: number;
 }
 
 export interface CalendarConfirmedAppointment {

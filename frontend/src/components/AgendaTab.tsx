@@ -993,9 +993,23 @@ export const AgendaTab: React.FC = () => {
                         <p className="font-bold text-slate-800 truncate group-hover:text-blue-700">
                           {ev.doctorName}
                         </p>
-                        <span className="text-[9px] text-slate-500 truncate block">
-                          {ev.specialtyName}
-                        </span>
+                        <div className="flex items-center justify-between gap-1 mt-0.5">
+                          <span className="text-[9px] text-slate-500 truncate">
+                            {ev.specialtyName}
+                          </span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {typeof ev.availableCount === 'number' && (
+                              <span className="px-1 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold text-[8px]">
+                                🟢 {ev.availableCount} Disp.
+                              </span>
+                            )}
+                            {typeof ev.occupiedCount === 'number' && ev.occupiedCount > 0 && (
+                              <span className="px-1 py-0.5 rounded bg-rose-100 text-rose-800 font-bold text-[8px]">
+                                🔴 {ev.occupiedCount} Ocupado{ev.occupiedCount > 1 ? 's' : ''}
+                              </span>
+                            )}
+                          </div>
+                        </div>
                       </div>
                     ))}
 
@@ -1157,6 +1171,7 @@ export const AgendaTab: React.FC = () => {
                   <th className="py-3 px-4">Horario</th>
                   <th className="py-3 px-4">Frecuencia</th>
                   <th className="py-3 px-4">Modalidad</th>
+                  <th className="py-3 px-4">Estado de Espacios</th>
                   <th className="py-3 px-4">Tipo</th>
                   <th className="py-3 px-4 text-center">Acciones</th>
                 </tr>
@@ -1164,7 +1179,7 @@ export const AgendaTab: React.FC = () => {
               <tbody className="divide-y divide-slate-100 text-slate-700">
                 {agendaItems.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="text-center py-8 text-slate-400 italic">
+                    <td colSpan={10} className="text-center py-8 text-slate-400 italic">
                       No se encontraron turnos con los filtros seleccionados.
                     </td>
                   </tr>
@@ -1202,6 +1217,18 @@ export const AgendaTab: React.FC = () => {
                       </td>
                       <td className="py-3 px-4 text-slate-500 max-w-[200px] truncate" title={item.modality}>
                         {item.modality || 'Consulta estándar'}
+                      </td>
+                      <td className="py-3 px-4">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                            🟢 {item.availableCount ?? (item.rawSlots?.length || 0)} Disponible(s)
+                          </span>
+                          {(item.occupiedCount ?? 0) > 0 && (
+                            <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                              🔴 {item.occupiedCount} Ocupado(s)
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="py-3 px-4">
                         <span

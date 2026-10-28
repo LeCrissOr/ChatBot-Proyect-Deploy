@@ -28,6 +28,11 @@ export interface DynamicSlot {
   agendaDetalleId?: number;
   codigoMedico?: string;
   cups?: string;
+  cupsOptions?: Array<{
+    codigo: string;
+    agenda_detalle_id: number;
+    descripcion?: string | null;
+  }>;
   consultorio?: number | string;
   tiempoAtencion?: number;
   codEspecialidadHosvital?: number;

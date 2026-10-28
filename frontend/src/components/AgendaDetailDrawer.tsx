@@ -34,7 +34,12 @@ const cleanDoctorName = (name: string) => {
 export const AgendaDetailDrawer: React.FC<AgendaDetailDrawerProps> = ({ item, onClose }) => {
   const [doctorAppointments, setDoctorAppointments] = useState<Appointment[]>([]);
   const [loadingAppointments, setLoadingAppointments] = useState<boolean>(false);
+  const [selectedSlotDate, setSelectedSlotDate] = useState<string>('ALL');
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    setSelectedSlotDate('ALL');
+  }, [item?.id]);
 
   // Manejo de navegación por teclado: cerrar con Escape
   useEffect(() => {
@@ -317,13 +322,30 @@ export const AgendaDetailDrawer: React.FC<AgendaDetailDrawerProps> = ({ item, on
             </h4>
             {item.activeDates && item.activeDates.length > 0 ? (
               <div className="flex flex-wrap gap-1.5 max-h-56 overflow-y-auto p-2.5 bg-slate-50 rounded-xl border border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setSelectedSlotDate('ALL')}
+                  className={`px-2.5 py-1 border rounded-lg text-xs font-semibold shadow-2xs transition cursor-pointer ${
+                    selectedSlotDate === 'ALL'
+                      ? 'bg-[#051650] text-white border-[#051650]'
+                      : 'bg-white border-slate-200 text-slate-700 hover:bg-blue-50 hover:text-blue-700'
+                  }`}
+                >
+                  Todas
+                </button>
                 {item.activeDates.map((dateStr) => (
-                  <span
+                  <button
+                    type="button"
                     key={dateStr}
-                    className="px-2.5 py-1 bg-white border border-slate-200 text-slate-700 rounded-lg text-xs font-mono shadow-2xs hover:bg-blue-50 hover:text-blue-700 transition"
+                    onClick={() => setSelectedSlotDate(dateStr)}
+                    className={`px-2.5 py-1 border rounded-lg text-xs font-mono shadow-2xs transition cursor-pointer ${
+                      selectedSlotDate === dateStr
+                        ? 'bg-[#051650] text-white border-[#051650]'
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-blue-50 hover:text-blue-700'
+                    }`}
                   >
                     {dateStr}
-                  </span>
+                  </button>
                 ))}
               </div>
             ) : (
@@ -332,6 +354,98 @@ export const AgendaDetailDrawer: React.FC<AgendaDetailDrawerProps> = ({ item, on
               </p>
             )}
           </div>
+
+          {/* Espacios Individuales de la Agenda (Disponibles vs. Ocupados) */}
+          {Array.isArray(item.rawSlots) && item.rawSlots.length > 0 && (() => {
+            const enrichedSlots = item.rawSlots.map((slot) => {
+              const slotTime = (slot.hora_inicial || '08:00').substring(0, 5);
+              const slotEnd = (slot.hora_final || '').substring(0, 5);
+              const matchedApt = doctorAppointments.find((apt) => {
+                const dt = new Date(apt.dateTime);
+                if (isNaN(dt.getTime())) return false;
+                const aptDate = dt.toLocaleDateString('en-CA', { timeZone: 'America/Bogota' });
+                const aptTime = dt.toLocaleTimeString('en-GB', {
+                  timeZone: 'America/Bogota',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  hour12: false,
+                });
+                return aptDate === slot.fecha_atencion && aptTime === slotTime;
+              });
+              const isOccupied = Boolean(slot.occupied || slot.statusLabel === 'OCUPADO' || matchedApt);
+              const patientLabel = matchedApt?.contactName || slot.patientName || (isOccupied ? 'Espacio Ocupado en Hosvital' : undefined);
+              return {
+                ...slot,
+                slotTime,
+                slotEnd,
+                isOccupied,
+                patientLabel,
+              };
+            });
+
+            const filteredSlots =
+              selectedSlotDate === 'ALL'
+                ? enrichedSlots
+                : enrichedSlots.filter((s) => s.fecha_atencion === selectedSlotDate);
+
+            const totalAvail = filteredSlots.filter((s) => !s.isOccupied).length;
+            const totalOcc = filteredSlots.filter((s) => s.isOccupied).length;
+
+            return (
+              <div className="space-y-2.5 text-xs">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <h4 className="font-bold text-slate-800 flex items-center gap-1.5">
+                    <Clock className="w-4 h-4 text-blue-600" />
+                    Espacios de Agenda ({selectedSlotDate === 'ALL' ? 'Todas las fechas' : selectedSlotDate})
+                  </h4>
+                  <div className="flex items-center gap-1.5">
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                      🟢 {totalAvail} Disponible(s)
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                      🔴 {totalOcc} Ocupado(s)
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 max-h-64 overflow-y-auto p-2.5 bg-slate-50 rounded-xl border border-slate-200">
+                  {filteredSlots.map((slot, idx) => (
+                    <div
+                      key={`${slot.fecha_atencion}-${slot.slotTime}-${idx}`}
+                      className={`p-2.5 rounded-lg border flex items-center justify-between gap-2 transition ${
+                        slot.isOccupied
+                          ? 'bg-rose-50/90 border-rose-200 text-rose-950'
+                          : 'bg-white border-slate-200/90 text-slate-800 hover:border-emerald-300'
+                      }`}
+                    >
+                      <div>
+                        <div className="font-mono font-bold text-xs flex items-center gap-2">
+                          <span>{slot.fecha_atencion}</span>
+                          <span className="text-blue-700">
+                            {slot.slotTime} {slot.slotEnd ? `- ${slot.slotEnd}` : ''}
+                          </span>
+                        </div>
+                        {slot.isOccupied && slot.patientLabel && (
+                          <div className="text-[11px] font-semibold text-rose-700 mt-0.5">
+                            👤 {slot.patientLabel}
+                          </div>
+                        )}
+                      </div>
+                      <span
+                        className={`px-2.5 py-1 rounded-full text-[11px] font-extrabold uppercase tracking-wide shrink-0 ${
+                          slot.isOccupied
+                            ? 'bg-rose-200/90 text-rose-900 border border-rose-300'
+                            : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                        }`}
+                      >
+                        {slot.isOccupied ? '🔴 Ocupado' : '🟢 Disponible'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         {/* Footer */}

@@ -3852,75 +3852,17 @@ export class DecisionTreeService {
 
   /**
    * Obtiene cupos disponibles para una especialidad médica, priorizando la API oficial de Hosvital
-   * y realizando fallback automático a la agenda local si Hosvital no responde o no tiene cupos.
+   * y excluyendo automáticamente cualquier espacio ocupado o no disponible.
    */
   private static async getSlotsForSpecialty(
     specialtyName: string,
     codEspecialidadHosvital?: number | string,
     limit: number = 3
   ): Promise<DynamicSlot[]> {
-    try {
-      let targetCode = codEspecialidadHosvital;
-
-      if (!targetCode) {
-        const hosvitalSpecs = await HunApiService.getEspecialidades();
-        const normTarget = this.normalizeText(specialtyName);
-        const match = hosvitalSpecs.find((s) => {
-          const normSpec = this.normalizeText(s.descripcion);
-          return normSpec.includes(normTarget) || normTarget.includes(normSpec);
-        });
-        if (match) {
-          targetCode = match.codigo;
-        }
-      }
-
-      if (targetCode) {
-        const hosvitalSlots = await HunApiService.consultarAgendaEspecialidad(targetCode);
-        if (hosvitalSlots && hosvitalSlots.length > 0) {
-          const mappedSlots: DynamicSlot[] = hosvitalSlots.slice(0, limit).map((s, idx) => {
-            const timeStr = s.hora_inicial ? s.hora_inicial.substring(0, 5) : '08:00';
-            const cupsVal = Array.isArray(s.cups)
-              ? (s.cups[0]?.codigo || '890202')
-              : (typeof s.cups === 'string' ? s.cups : '890202');
-            const consultorioStr = s.numero_consultorio ? String(s.numero_consultorio).trim() : '200';
-            const doctorName = s.nombre_medico?.trim() || 'Especialista HUN';
-            const specName = s.nombre_especialidad?.trim() || specialtyName;
-
-            return {
-              id: `hosvital-${s.id_agenda_detalle || s.idAgendaDetalle || idx}-${Date.now()}`,
-              doctorName,
-              doctorCode: s.codigo_medico?.trim() || 'ME445',
-              officeCode: consultorioStr,
-              specialtyName: specName,
-              dateTimeStr: `${s.fecha_atencion} ${timeStr} (Cons. ${consultorioStr}) con ${doctorName}`,
-              isoDateTime: `${s.fecha_atencion}T${s.hora_inicial || '08:00:00'}`,
-              agendaDetalleId: Number(s.id_agenda_detalle || s.idAgendaDetalle) || 677,
-              codigoMedico: s.codigo_medico?.trim() || 'ME445',
-              cups: cupsVal,
-              consultorio: consultorioStr,
-              tiempoAtencion: Number(s.tiempo_intervalo) || 20,
-              codEspecialidadHosvital: Number(targetCode),
-            };
-          });
-
-          if (mappedSlots.length > 0) {
-            console.log(`✅ [DecisionTree] ${mappedSlots.length} cupos obtenidos directamente de Hosvital para ${specialtyName}`);
-            return mappedSlots;
-          }
-        }
-      }
-
-      if (CONFIG.HOSVITAL_ENABLED) {
-        console.log(`ℹ️ [DecisionTree] No hay cupos reales abiertos en Hosvital para ${specialtyName}.`);
-        return [];
-      }
-    } catch (err: any) {
-      console.warn(`⚠️ [DecisionTree] Error consultando agenda Hosvital: ${err.message}`);
-      if (CONFIG.HOSVITAL_ENABLED) {
-        return [];
-      }
+    if (codEspecialidadHosvital) {
+      const byCode = await AgendaService.getAvailableSlotsForSpecialty(String(codEspecialidadHosvital), undefined, limit);
+      if (byCode.length > 0) return byCode;
     }
-
     return AgendaService.getAvailableSlotsForSpecialty(specialtyName, undefined, limit);
   }
 
@@ -4730,58 +4672,90 @@ export class DecisionTreeService {
         const officeText = officeCode ? `\n• Consultorio: Cons. ${officeCode}` : '';
 
         let numeroCitaHosvital: number | undefined;
-
         let hosvitalErrorMsg: string | undefined;
 
-        if (selectedDyn?.agendaDetalleId) {
-          try {
-            const fechaStr = selectedDyn.isoDateTime ? selectedDyn.isoDateTime.split('T')[0] : appointmentDate.toISOString().split('T')[0];
-            const horaStr = selectedDyn.isoDateTime?.includes('T') ? selectedDyn.isoDateTime.split('T')[1].substring(0, 8) : '08:00:00';
-            const cupsVal = selectedDyn.cups || '890202';
+        if (selectedDyn) {
+          // Seleccionar el CUPS y agenda_detalle_id correspondientes a Primera Vez (8902xx) o Control (8903xx)
+          const isFirstTime = data.isFirstTime !== false;
+          let resolvedDetalleId = Number(selectedDyn.agendaDetalleId || 0);
+          let resolvedCups = String(selectedDyn.cups || '890202').trim();
 
-            const docTypeHosvital = normalizeHosvitalDocType(data.patientDocumentType || 'CC');
-            const docNumClean = String(data.patientDoc || '79810144').replace(/\D/g, '');
-
-            console.log(`📡 [DecisionTree] Publicando cita en Hosvital para paciente ${docTypeHosvital} ${docNumClean}...`);
-            const asignarRes = await HunApiService.asignarCita({
-              paciente: {
-                tipo: docTypeHosvital,
-                documento: docNumClean,
-                nombre: patientName,
-                primer_nombre: (data as any)?.patientFirstName || patientName.split(' ')[0],
-                primer_apellido: (data as any)?.patientLastName || (patientName.split(' ').length > 1 ? patientName.split(' ')[1] : ''),
-                telefono: (data as any)?.patientPhone || data.phone,
-                celular: (data as any)?.patientPhone || data.phone,
-                correo: (data as any)?.patientEmail || data.email,
-                email: (data as any)?.patientEmail || data.email,
-                fecha_nacimiento: (data as any)?.patientBirthDate,
-                direccion: (data as any)?.patientAddress,
-                ciudad: (data as any)?.patientCity || 'Bogotá',
-              } as any,
-              medico: {
-                codigo_medico: selectedDyn.codigoMedico || selectedDyn.doctorCode || 'ME445',
-                especialidad: selectedDyn.codEspecialidadHosvital || 782,
-              },
-              agenda_detalle_id: selectedDyn.agendaDetalleId,
-              consultorio: selectedDyn.consultorio || selectedDyn.officeCode || 200,
-              fecha: fechaStr,
-              hora: horaStr,
-              procedimiento: cupsVal,
-              tiempo_atencion: selectedDyn.tiempoAtencion || 20,
-              eps: data.epsCode || CONFIG.HUN_DEFAULT_EPS || 'HUN25',
-            });
-
-            if (asignarRes.success === true && Number.isSafeInteger(asignarRes.numeroCitaHosvital) && Number(asignarRes.numeroCitaHosvital) > 0) {
-              numeroCitaHosvital = asignarRes.numeroCitaHosvital;
-              data.numeroCitaHosvital = numeroCitaHosvital;
-              console.log(`🎉 [DecisionTree] Cita asentada exitosamente en Hosvital #${numeroCitaHosvital}`);
-            } else {
-              hosvitalErrorMsg = asignarRes.message || (asignarRes.soap?.descripcion) || 'Sin confirmación de cupo en Hosvital';
-              console.warn(`⚠️ [DecisionTree] Hosvital no confirmó la cita: ${hosvitalErrorMsg}`);
+          if (Array.isArray(selectedDyn.cupsOptions) && selectedDyn.cupsOptions.length > 0) {
+            const preferredPrefix = isFirstTime ? '8902' : '8903';
+            const matchedCup =
+              selectedDyn.cupsOptions.find((c) => c.codigo.startsWith(preferredPrefix)) ||
+              selectedDyn.cupsOptions[0];
+            if (matchedCup) {
+              if (matchedCup.agenda_detalle_id > 0) resolvedDetalleId = matchedCup.agenda_detalle_id;
+              if (matchedCup.codigo) resolvedCups = matchedCup.codigo.trim();
             }
-          } catch (err: any) {
-            hosvitalErrorMsg = err.message;
-            console.warn(`⚠️ [DecisionTree] Error conectando con asignar_cita de Hosvital: ${err.message}`);
+          }
+
+          if (resolvedDetalleId > 0) {
+            try {
+              const fechaStr = selectedDyn.isoDateTime ? selectedDyn.isoDateTime.split('T')[0] : appointmentDate.toISOString().split('T')[0];
+              const rawTimePart = selectedDyn.isoDateTime?.includes('T') ? selectedDyn.isoDateTime.split('T')[1] : '08:00:00';
+              const horaStr = rawTimePart.length === 5 ? `${rawTimePart}:00` : rawTimePart.substring(0, 8);
+
+              const docTypeHosvital = normalizeHosvitalDocType(data.patientDocumentType || 'CC');
+              const docNumClean = String(data.patientDoc || '79810144').replace(/\D/g, '');
+
+              console.log(`📡 [DecisionTree] Publicando cita en Hosvital para paciente ${docTypeHosvital} ${docNumClean} (agenda_detalle_id=${resolvedDetalleId}, cups=${resolvedCups})...`);
+              const asignarRes = await HunApiService.asignarCita({
+                paciente: {
+                  tipo: docTypeHosvital,
+                  documento: docNumClean,
+                  nombre: patientName,
+                  primer_nombre: (data as any)?.patientFirstName || patientName.split(' ')[0],
+                  primer_apellido: (data as any)?.patientLastName || (patientName.split(' ').length > 1 ? patientName.split(' ')[1] : ''),
+                  telefono: (data as any)?.patientPhone || data.phone,
+                  celular: (data as any)?.patientPhone || data.phone,
+                  correo: (data as any)?.patientEmail || data.email,
+                  email: (data as any)?.patientEmail || data.email,
+                  fecha_nacimiento: (data as any)?.patientBirthDate,
+                  direccion: (data as any)?.patientAddress,
+                  ciudad: (data as any)?.patientCity || 'Bogotá',
+                } as any,
+                medico: {
+                  codigo_medico: selectedDyn.codigoMedico || selectedDyn.doctorCode || 'ME445',
+                  especialidad: selectedDyn.codEspecialidadHosvital || 782,
+                },
+                agenda_detalle_id: resolvedDetalleId,
+                consultorio: selectedDyn.consultorio || selectedDyn.officeCode || 200,
+                fecha: fechaStr,
+                hora: horaStr,
+                procedimiento: resolvedCups,
+                tiempo_atencion: selectedDyn.tiempoAtencion || 20,
+                eps: data.epsCode || CONFIG.HUN_DEFAULT_EPS || 'HUN25',
+              });
+
+              if (asignarRes.success === true && Number.isSafeInteger(asignarRes.numeroCitaHosvital) && Number(asignarRes.numeroCitaHosvital) > 0) {
+                numeroCitaHosvital = asignarRes.numeroCitaHosvital;
+                data.numeroCitaHosvital = numeroCitaHosvital;
+                AgendaService.markSlotAsOccupied(
+                  selectedDyn.isoDateTime,
+                  selectedDyn.doctorName,
+                  selectedDyn.codigoMedico || selectedDyn.doctorCode || undefined,
+                  patientName,
+                  `Cita #${numeroCitaHosvital}`
+                );
+                console.log(`🎉 [DecisionTree] Cita asentada exitosamente en Hosvital #${numeroCitaHosvital}`);
+              } else {
+                hosvitalErrorMsg = asignarRes.message || (asignarRes.soap?.descripcion) || 'Sin confirmación de cupo en Hosvital';
+                console.warn(`⚠️ [DecisionTree] Hosvital no confirmó la cita: ${hosvitalErrorMsg}`);
+                // Si el turno ya fue ocupado o no está disponible en Hosvital, marcarlo como Ocupado para no volver a ofrecerlo y reflejarlo en la Agenda
+                AgendaService.markSlotAsOccupied(
+                  selectedDyn.isoDateTime,
+                  selectedDyn.doctorName,
+                  selectedDyn.codigoMedico || selectedDyn.doctorCode || undefined,
+                  undefined,
+                  'Ocupado en Hosvital'
+                );
+              }
+            } catch (err: any) {
+              hosvitalErrorMsg = err.message;
+              console.warn(`⚠️ [DecisionTree] Error conectando con asignar_cita de Hosvital: ${err.message}`);
+            }
           }
         }
 
