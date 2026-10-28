@@ -16,21 +16,19 @@ function service(response, enabled = true) {
     HOSVITAL_MAEDIR_USER: 'test', HOSVITAL_MAEDIR_PASSWORD: 'test',
   };
   const deps = {
-    axios: { create: () => ({ post: async (url, payload) => {
-      calls.push({ url, payload });
-      if (response instanceof Error) throw response;
-      return { status: 200, data: response };
-    } }) },
+    axios: { create: () => ({
+      post: async (url, payload) => {
+        calls.push({ url, payload });
+        if (response instanceof Error) throw response;
+        return { status: 200, data: response };
+      },
+      get: async (url) => {
+        if (response instanceof Error) throw response;
+        return { status: 200, data: response };
+      },
+    }) },
     '../config': { CONFIG: config },
     './hunIntegracion.service': {},
-    './hosvitalSoap.service': {
-      HosvitalSoapService: {
-        cancelarCita: async (p) => {
-          calls.push({ soap: true, payload: p });
-          return { success: true, codigo: 0, respuesta: 'Cancelación exitosa' };
-        },
-      },
-    },
   };
   const exports = {};
   const code = ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src/services/hunApi.service.ts'), 'utf8'), {
@@ -81,11 +79,12 @@ test('disabled integration fails without inventing a number or making a request'
   assert.equal(result.numeroCitaHosvital, undefined);
   assert.equal(calls.length, 0);
 });
-test('cancellation uses WSCancita SOAP service according to DigitalWare specification', async () => {
-  const { api, calls } = service({ success: true });
-  const result = await api.cancelarCita({ cita: 12345, tipo_documento: 'CC', documento: '000' });
+test('cancellation uses REST with clean payload and never SOAP', async () => {
+  const { api, calls } = service({ success: true, numero_cancelacion: 318658 });
+  const result = await api.cancelarCita({ cita: 12345, tipo_documento: 'Cédula de Ciudadanía', documento: '79.810.144', motivoCancelacion: '1' });
   assert.equal(result.success, true);
+  assert.equal(result.numeroCancelacion, 318658);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].soap, true);
-  assert.equal(calls[0].payload.cita, 12345);
+  assert.equal(calls[0].url, '/webServiceCancelarCitaH/cancelar_cita');
+  assert.deepEqual({ ...calls[0].payload }, { cita: 12345, tipo_documento: 'CC', documento: '79810144' });
 });

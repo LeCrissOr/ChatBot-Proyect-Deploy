@@ -130,18 +130,37 @@ export class AgendaService {
    */
   private static occupiedSlotsMemoryMap = new Map<string, { reason: string; patientName?: string; timestamp: number }>();
 
+  private static extractBogotaDateAndTime(isoDateTimeOrDate?: string | Date): { datePart: string; timePart: string } | null {
+    if (!isoDateTimeOrDate) return null;
+    if (typeof isoDateTimeOrDate === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(isoDateTimeOrDate) && !isoDateTimeOrDate.endsWith('Z') && !/[+-]\d{2}:?\d{2}$/.test(isoDateTimeOrDate)) {
+      const parts = isoDateTimeOrDate.split('T');
+      const datePart = parts[0]?.trim();
+      const timePart = (parts[1] || '08:00').substring(0, 5);
+      if (datePart) return { datePart, timePart };
+    }
+    const dt = new Date(isoDateTimeOrDate);
+    if (isNaN(dt.getTime())) return null;
+    const dateParts = bogotaDateParts(dt);
+    const datePart = `${dateParts.year}-${dateParts.month}-${dateParts.day}`;
+    const timePart = new Intl.DateTimeFormat('en-GB', {
+      timeZone: BOGOTA_TIME_ZONE,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(dt);
+    return { datePart, timePart };
+  }
+
   public static markSlotAsOccupied(
-    isoDateTimeOrDate: string,
+    isoDateTimeOrDate?: string | Date,
     doctorName?: string,
     doctorCode?: string,
     patientName?: string,
     reason: string = 'Ocupado en Hosvital'
   ) {
-    if (!isoDateTimeOrDate) return;
-    const parts = isoDateTimeOrDate.split('T');
-    const datePart = parts[0]?.trim();
-    const timePart = (parts[1] || '08:00').substring(0, 5);
-    if (!datePart) return;
+    const parsed = this.extractBogotaDateAndTime(isoDateTimeOrDate);
+    if (!parsed) return;
+    const { datePart, timePart } = parsed;
 
     const cleanDoc = this.cleanDoctorNameForMatch(doctorName || '');
     const cleanCode = (doctorCode || '').trim().toUpperCase();
@@ -151,6 +170,34 @@ export class AgendaService {
     if (cleanCode) this.occupiedSlotsMemoryMap.set(`${datePart}|${timePart}|${cleanCode}`, entry);
     this.occupiedSlotsMemoryMap.set(`${datePart}|${timePart}`, entry);
 
+    socketService.emitAgendaUpdated({ timestamp: new Date().toISOString() });
+  }
+
+  public static markSlotAsAvailable(
+    isoDateTimeOrDate?: string | Date,
+    doctorName?: string,
+    doctorCode?: string
+  ) {
+    const parsed = this.extractBogotaDateAndTime(isoDateTimeOrDate);
+    if (!parsed) return;
+    const { datePart, timePart } = parsed;
+
+    const cleanDoc = this.cleanDoctorNameForMatch(doctorName || '');
+    const cleanCode = (doctorCode || '').trim().toUpperCase();
+
+    if (cleanDoc) this.occupiedSlotsMemoryMap.delete(`${datePart}|${timePart}|${cleanDoc}`);
+    if (cleanCode) this.occupiedSlotsMemoryMap.delete(`${datePart}|${timePart}|${cleanCode}`);
+    this.occupiedSlotsMemoryMap.delete(`${datePart}|${timePart}`);
+
+    // También limpiar cualquier entrada de ese mismo fecha|hora sin importar sufijo de médico
+    const prefix = `${datePart}|${timePart}`;
+    for (const k of Array.from(this.occupiedSlotsMemoryMap.keys())) {
+      if (k === prefix || k.startsWith(`${prefix}|`)) {
+        this.occupiedSlotsMemoryMap.delete(k);
+      }
+    }
+
+    HunApiService.clearCache();
     socketService.emitAgendaUpdated({ timestamp: new Date().toISOString() });
   }
 

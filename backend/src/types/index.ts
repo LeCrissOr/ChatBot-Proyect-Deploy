@@ -150,5 +150,6 @@ export interface BotReplyResult {
     newDateTime: Date;
     newDoctorName?: string;
     reason?: string;
+    newNumeroCitaHosvital?: number;
   };
 }

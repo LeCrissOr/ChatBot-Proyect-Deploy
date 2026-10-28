@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { store } from '../services/store.service';
 import { socketService } from '../services/socket.service';
 import { HUN_SPECIALTIES } from '../services/decisionTree.service';
+import { AgendaService } from '../services/agenda.service';
 
 export class MetricsController {
   public static async getMetrics(req: Request, res: Response): Promise<void> {
@@ -30,6 +31,7 @@ export class MetricsController {
     try {
       const id = String(req.params.id);
       await store.deleteContact(id);
+      AgendaService.clearOccupiedSlotsMemory();
       socketService.emitContactsUpdated(store.getAllContacts());
       socketService.emitConversationsCleared();
       socketService.emitAppointmentsUpdated(store.getAllAppointments());
@@ -46,6 +48,7 @@ export class MetricsController {
     try {
       const ids = (req.body?.ids as string[]) || (req.query?.ids ? String(req.query.ids).split(',') : []);
       const result = await store.deleteContacts(ids);
+      AgendaService.clearOccupiedSlotsMemory();
       socketService.emitContactsUpdated(store.getAllContacts());
       socketService.emitConversationsCleared();
       socketService.emitAppointmentsUpdated(store.getAllAppointments());
@@ -70,6 +73,7 @@ export class MetricsController {
         res.status(404).json({ error: 'Cita no encontrada' });
         return;
       }
+      AgendaService.clearOccupiedSlotsMemory();
       socketService.emitAppointmentsUpdated(store.getAllAppointments());
       socketService.emitMetricsUpdated(store.getMetrics());
       res.json({ success: true, message: 'Cita eliminada exitosamente' });
@@ -82,6 +86,7 @@ export class MetricsController {
     try {
       const scope = (req.query.scope as 'ALL' | 'CANCELLED') || (req.body?.scope as 'ALL' | 'CANCELLED') || 'CANCELLED';
       const result = store.clearAppointments(scope);
+      AgendaService.clearOccupiedSlotsMemory();
       socketService.emitAppointmentsUpdated(store.getAllAppointments());
       socketService.emitMetricsUpdated(store.getMetrics());
       res.json({

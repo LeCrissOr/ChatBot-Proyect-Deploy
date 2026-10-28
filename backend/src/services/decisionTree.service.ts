@@ -3474,17 +3474,129 @@ export class DecisionTreeService {
           lower.includes('confirmar') ||
           lower.includes('reprogramar')
         ) {
-          const aptId = data.selectedAppointmentForReschedule?.id;
+          const selectedApt = data.selectedAppointmentForReschedule;
+          const aptId = selectedApt?.id;
           const dynamicSlot = (data as any).selectedDynamicSlot as DynamicSlot | undefined;
           const newDate = dynamicSlot?.isoDateTime
             ? new Date(dynamicSlot.isoDateTime)
             : new Date(Date.now() + 48 * 60 * 60 * 1000);
-          const doctorName = dynamicSlot?.doctorName || data.pendingNewSlot?.doctorName;
+          const doctorName = dynamicSlot?.doctorName || data.pendingNewSlot?.doctorName || selectedApt?.doctorName;
           const reason = data.rescheduleReason || 'Reprogramación solicitada por el paciente';
+
+          const oldNumCita =
+            selectedApt?.numeroCitaHosvital ||
+            (selectedApt?.referralCode && String(selectedApt.referralCode).startsWith('HOSVITAL-')
+              ? parseInt(String(selectedApt.referralCode).replace('HOSVITAL-', ''), 10)
+              : undefined);
+
+          let newNumeroCitaHosvital: number | undefined;
+          let oldCancelNum: number | undefined;
+
+          if (CONFIG.HOSVITAL_ENABLED && dynamicSlot) {
+            const isFirstTime = selectedApt?.isFirstTime ?? data.isFirstTime ?? true;
+            let resolvedDetalleId = Number(dynamicSlot.agendaDetalleId || 0);
+            let resolvedCups = String(dynamicSlot.cups || '890202').trim();
+
+            if (Array.isArray(dynamicSlot.cupsOptions) && dynamicSlot.cupsOptions.length > 0) {
+              const preferredPrefix = isFirstTime ? '8902' : '8903';
+              const matchedCup =
+                dynamicSlot.cupsOptions.find((c) => c.codigo.startsWith(preferredPrefix)) ||
+                dynamicSlot.cupsOptions[0];
+              if (matchedCup) {
+                if (matchedCup.agenda_detalle_id > 0) resolvedDetalleId = matchedCup.agenda_detalle_id;
+                if (matchedCup.codigo) resolvedCups = matchedCup.codigo.trim();
+              }
+            }
+
+            if (resolvedDetalleId > 0) {
+              const fechaStr = dynamicSlot.isoDateTime ? dynamicSlot.isoDateTime.split('T')[0] : newDate.toISOString().split('T')[0];
+              const rawTimePart = dynamicSlot.isoDateTime?.includes('T') ? dynamicSlot.isoDateTime.split('T')[1] : '08:00:00';
+              const horaStr = rawTimePart.length === 5 ? `${rawTimePart}:00` : rawTimePart.substring(0, 8);
+              const docTypeHosvital = normalizeHosvitalDocType(data.patientDocumentType || 'CC');
+              const docNumClean = String(data.patientDoc || '79810144').replace(/\D/g, '');
+              const patientName = data.patientName || patientSavedName || selectedApt?.contactName || 'Paciente';
+
+              console.log(`📡 [DecisionTree] Reprogramando cita en Hosvital: asignando nuevo horario para ${docTypeHosvital} ${docNumClean}...`);
+              const asignarRes = await HunApiService.asignarCita({
+                paciente: {
+                  tipo: docTypeHosvital,
+                  documento: docNumClean,
+                  nombre: patientName,
+                  primer_nombre: (data as any)?.patientFirstName || patientName.split(' ')[0],
+                  primer_apellido: (data as any)?.patientLastName || (patientName.split(' ').length > 1 ? patientName.split(' ')[1] : ''),
+                  telefono: (data as any)?.patientPhone || data.phone,
+                  celular: (data as any)?.patientPhone || data.phone,
+                  correo: (data as any)?.patientEmail || data.email,
+                  email: (data as any)?.patientEmail || data.email,
+                  fecha_nacimiento: (data as any)?.patientBirthDate,
+                  direccion: (data as any)?.patientAddress,
+                  ciudad: (data as any)?.patientCity || 'Bogotá',
+                } as any,
+                medico: {
+                  codigo_medico: dynamicSlot.codigoMedico || dynamicSlot.doctorCode || 'ME401',
+                  especialidad: dynamicSlot.codEspecialidadHosvital || 782,
+                },
+                agenda_detalle_id: resolvedDetalleId,
+                consultorio: dynamicSlot.consultorio || dynamicSlot.officeCode || 21,
+                fecha: fechaStr,
+                hora: horaStr,
+                procedimiento: resolvedCups,
+                tiempo_atencion: dynamicSlot.tiempoAtencion || 30,
+                eps: data.epsCode || CONFIG.HUN_DEFAULT_EPS || 'HUN25',
+              });
+
+              if (asignarRes.success && asignarRes.numeroCitaHosvital) {
+                newNumeroCitaHosvital = asignarRes.numeroCitaHosvital;
+                AgendaService.markSlotAsOccupied(
+                  dynamicSlot.isoDateTime,
+                  dynamicSlot.doctorName,
+                  dynamicSlot.codigoMedico || dynamicSlot.doctorCode || undefined,
+                  patientName,
+                  `Cita #${newNumeroCitaHosvital}`
+                );
+
+                // Cancelar la cita anterior en Hosvital para liberar el cupo anterior y generar su No.Canc.
+                if (oldNumCita && !isNaN(Number(oldNumCita))) {
+                  console.log(`📡 [DecisionTree] Cancelando cita anterior #${oldNumCita} en Hosvital por reprogramación hacia #${newNumeroCitaHosvital}...`);
+                  const cancelRes = await HunApiService.cancelarCita({
+                    cita: Number(oldNumCita),
+                    tipo_documento: docTypeHosvital,
+                    documento: docNumClean,
+                  });
+                  oldCancelNum = cancelRes.numeroCancelacion;
+                  if (selectedApt?.dateTime) {
+                    AgendaService.markSlotAsAvailable(selectedApt.dateTime, selectedApt.doctorName, selectedApt.doctorId);
+                  }
+                }
+              } else {
+                AgendaService.markSlotAsOccupied(
+                  dynamicSlot.isoDateTime,
+                  dynamicSlot.doctorName,
+                  dynamicSlot.codigoMedico || dynamicSlot.doctorCode || undefined,
+                  undefined,
+                  'Ocupado en Hosvital'
+                );
+                return {
+                  replyMessages: [
+                    `⚠️ El nuevo horario seleccionado acaba de ser ocupado en Hosvital (${asignarRes.message || 'No disponible'}). Tu cita original se mantiene intacta y sin cambios.`,
+                    '¿Deseas elegir otro horario disponible o conservar tu cita actual?\n\n1️⃣ Ir al menú principal\n2️⃣ Terminar conversación',
+                  ],
+                  nextFlow: 'IDLE',
+                  nextStep: 'POST_CONFIRMATION_OPTIONS',
+                  updatedData: data,
+                };
+              }
+            }
+          }
+
+          const newHosvitalLine = newNumeroCitaHosvital ? `\n• Nuevo Número Oficial Hosvital: #${newNumeroCitaHosvital}` : '';
+          const oldCancelledLine = oldNumCita
+            ? `\n• Cita anterior cancelada en Hosvital: #${oldNumCita}${oldCancelNum ? ` (No. Canc: #${oldCancelNum})` : ''}`
+            : '';
 
           return {
             replyMessages: [
-              `✅ ¡Tu cita ha sido reprogramada exitosamente! 🏥\n\n• Especialidad: ${data.selectedAppointmentForReschedule?.specialty}\n• Médico: ${doctorName}\n• Nuevo horario: ${dynamicSlot?.dateTimeStr || data.pendingNewSlot?.dateTime}\n• Motivo registrado: ${reason}\n• Sede: Hospital Universitario Nacional (Bogotá CAN - Calle 44 # 59-75)\n\nRecuerda presentarte 20 minutos antes con tu documento de identidad.`,
+              `✅ ¡Tu cita ha sido reprogramada exitosamente en Hosvital! 🏥\n\n• Especialidad: ${selectedApt?.specialty}\n• Médico: ${doctorName}\n• Nuevo horario: ${dynamicSlot?.dateTimeStr || data.pendingNewSlot?.dateTime}${newHosvitalLine}${oldCancelledLine}\n• Motivo registrado: ${reason}\n• Sede: Hospital Universitario Nacional (Bogotá CAN - Calle 44 # 59-75)\n\nRecuerda presentarte 20 minutos antes con tu documento de identidad.`,
               '¿Deseas realizar alguna otra gestión?\n\n1️⃣ Ir al menú principal\n2️⃣ Terminar conversación',
             ],
             nextFlow: 'IDLE',
@@ -3494,8 +3606,13 @@ export class DecisionTreeService {
               newDateTime: newDate,
               newDoctorName: doctorName,
               reason,
+              newNumeroCitaHosvital,
             } : undefined,
-            updatedData: { ...data, appointmentRescheduled: true },
+            updatedData: {
+              ...data,
+              appointmentRescheduled: true,
+              ...(newNumeroCitaHosvital ? { numeroCitaHosvital: newNumeroCitaHosvital } : {}),
+            },
           };
         }
 
@@ -3734,16 +3851,50 @@ export class DecisionTreeService {
         ) {
           const aptId = selectedApt?.id;
           const specialty = selectedApt?.specialty || 'especialidad solicitada';
+          const numCita =
+            selectedApt?.numeroCitaHosvital ||
+            (selectedApt?.referralCode && String(selectedApt.referralCode).startsWith('HOSVITAL-')
+              ? parseInt(String(selectedApt.referralCode).replace('HOSVITAL-', ''), 10)
+              : undefined);
+
+          let numeroCancelacionHosvital: number | undefined;
+          let hosvitalCancelAlreadySent = false;
+
+          if (CONFIG.HOSVITAL_ENABLED && numCita && !isNaN(Number(numCita))) {
+            const docTypeHosvital = normalizeHosvitalDocType(data.patientDocumentType || 'CC');
+            const docNumClean = String(data.patientDoc || '79810144').replace(/\D/g, '');
+            const cancelRes = await HunApiService.cancelarCita({
+              cita: Number(numCita),
+              tipo_documento: docTypeHosvital,
+              documento: docNumClean,
+            });
+            hosvitalCancelAlreadySent = true;
+            numeroCancelacionHosvital = cancelRes.numeroCancelacion;
+          }
+
+          if (selectedApt?.dateTime) {
+            AgendaService.markSlotAsAvailable(selectedApt.dateTime, selectedApt.doctorName, selectedApt.doctorId);
+          }
+
+          const citaInfoLine = numCita ? `\n• Cita Hosvital cancelada: #${numCita}` : '';
+          const cancNumLine = numeroCancelacionHosvital ? `\n• No. Cancelación Hosvital: #${numeroCancelacionHosvital}` : '';
+
           return {
             replyMessages: [
-              `✅ Tu cita médica de ${specialty} ha sido cancelada exitosamente.\nMotivo registrado: ${reason}.\n\nEsperamos poder atenderte en una próxima oportunidad en el Hospital Universitario Nacional.`,
+              `✅ Tu cita médica de ${specialty} ha sido cancelada exitosamente en Hosvital.${citaInfoLine}${cancNumLine}\n• Motivo registrado: ${reason}.\n\nEsperamos poder atenderte en una próxima oportunidad en el Hospital Universitario Nacional.`,
               '¿Deseas realizar alguna otra gestión?\n\n1️⃣ Ir al menú principal\n2️⃣ Terminar conversación',
             ],
             nextFlow: 'IDLE',
             nextStep: 'POST_CONFIRMATION_OPTIONS',
             cancelAppointmentId: aptId,
             cancelAppointmentReason: reason,
-            updatedData: { ...data, appointmentCancelled: true, cancellationReason: reason },
+            updatedData: {
+              ...data,
+              appointmentCancelled: true,
+              cancellationReason: reason,
+              hosvitalCancelAlreadySent,
+              numeroCancelacionHosvital,
+            },
           };
         }
 

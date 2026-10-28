@@ -1,7 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import { CONFIG } from '../config';
 import { HunIntegracionService } from './hunIntegracion.service';
-import { HosvitalSoapService } from './hosvitalSoap.service';
 
 export interface HunEspecialidadItem {
   codigo: string;
@@ -500,83 +499,132 @@ export class HunApiService {
   }
 
   /**
-   * 6. Cancela una cita médica en Hosvital
+   * 6. Cancela una cita médica en Hosvital y recupera el consecutivo de cancelación (No.Canc.)
    */
-  public static async cancelarCita(payload: HunCancelarCitaPayload): Promise<{ success: boolean; message: string; soap?: any }> {
+  public static async cancelarCita(
+    payload: HunCancelarCitaPayload
+  ): Promise<{ success: boolean; message: string; numeroCancelacion?: number; soap?: any; data?: any }> {
     if (!CONFIG.HOSVITAL_ENABLED) {
       return { success: false, message: 'La API de agendamiento está deshabilitada. No se ha cancelado la cita en Hosvital.' };
     }
 
     const cleanTipo = normalizeHosvitalDocType(payload.tipo_documento);
     const cleanDoc = String(payload.documento || '').replace(/\D/g, '');
+    const cleanCita = Number(payload.cita);
     const cleanPayload = {
-      ...payload,
+      cita: cleanCita,
       tipo_documento: cleanTipo,
       documento: cleanDoc,
     };
 
     console.log(`\n======================================================`);
-    console.log(`📡 [Hosvital] CANCELANDO CITA #${payload.cita} MEDIANTE WSCANCITA (SOAP DIGITALWARE)`);
-    console.log(`📍 URL: ${CONFIG.HOSVITAL_SOAP_BASE_URL}${CONFIG.HOSVITAL_SOAP_CANCITA_PATH}`);
+    console.log(`📡 [HunApi] CANCELANDO CITA #${cleanCita} EN HOSVITAL`);
+    console.log(`📍 Endpoint: ${CONFIG.HUN_API_URL}${CONFIG.HUN_ENDPOINT_CANCELAR_CITA}`);
     console.log(`👤 Paciente: ${cleanTipo} ${cleanDoc}`);
     console.log(`======================================================`);
 
     try {
-      const soapRes = await HosvitalSoapService.cancelarCita({
-        empresa: CONFIG.HOSVITAL_EMPRESA || '1',
-        sede: CONFIG.HOSVITAL_SEDE || '001',
-        cita: Number(payload.cita),
-        tipoDocumento: cleanTipo,
-        documento: cleanDoc,
-        motivoCancelacion: (payload as any).motivoCancelacion || '1',
-        consecutivoCancelacion: (payload as any).consecutivoCancelacion || '',
-        usuario: CONFIG.HOSVITAL_MAEDIR_USER || 'agendamiento',
-        contrasena: CONFIG.HOSVITAL_MAEDIR_PASSWORD || '4g3ndHU**N',
-      });
+      const response = await this.getClient().post(
+        CONFIG.HUN_ENDPOINT_CANCELAR_CITA,
+        cleanPayload
+      );
 
+      // Invalidar caché de agenda tras liberar cupo
       this.agendaCache.clear();
 
-      if (soapRes.success) {
-        console.log(`🎉 [Hosvital] ¡CITA #${payload.cita} CANCELADA EXITOSAMENTE EN HOSVITAL (WSCancita)!`);
-        return {
-          success: true,
-          message: soapRes.respuesta || 'Cita cancelada con éxito en Hosvital',
-          soap: soapRes,
-        };
-      }
+      const resData = response.data || {};
+      console.log(`📥 [HunApi] Respuesta Cancelar Cita #${cleanCita} (HTTP ${response.status}):`);
+      console.dir(resData, { depth: null });
 
-      console.warn(`⚠️ [Hosvital] WSCancita devolvió código ${soapRes.codigo}: ${soapRes.respuesta}`);
+      const hasError =
+        resData.success === false ||
+        resData?.soap?.ok === false ||
+        Boolean(resData?.error) ||
+        (resData?.soap?.codigo !== undefined && String(resData.soap.codigo) !== '0');
 
-      // Fallback: Si WSCancita reporta error y el endpoint REST está disponible, intentar REST
-      if (CONFIG.HUN_ENDPOINT_CANCELAR_CITA) {
-        try {
-          console.log(`🔄 [Hosvital] Intentando fallback por endpoint REST: ${CONFIG.HUN_API_URL}${CONFIG.HUN_ENDPOINT_CANCELAR_CITA}`);
-          const restResp = await this.getClient().post(
-            CONFIG.HUN_ENDPOINT_CANCELAR_CITA,
-            cleanPayload
-          );
-          if (restResp.data?.success !== false) {
-            console.log(`📥 [HunApi] Cancelación procesada por endpoint REST fallback:`, restResp.data);
-            return {
-              success: true,
-              message: restResp.data?.mensaje || restResp.data?.message || 'Cancelación procesada en Hosvital',
-            };
-          }
-        } catch (restErr: any) {
-          console.warn(`⚠️ [HunApi] Fallback REST no respondió o falló: ${restErr.message}`);
+      const isSuccess = !hasError;
+
+      // Extraer consecutivo de cancelación (No.Canc. en Hosvital) si viene en la respuesta
+      let numeroCancelacion: number | undefined;
+      const extractCancelNum = (obj: any): number | undefined => {
+        if (!obj || typeof obj !== 'object') return undefined;
+        const candidate =
+          obj.numero_cancelacion ??
+          obj.numeroCancelacion ??
+          obj.Numero_Cancelacion ??
+          obj.NumeroCancelacion ??
+          obj.consecutivo_cancelacion ??
+          obj.consecutivoCancelacion ??
+          obj.consecutivo ??
+          obj.Consecutivo ??
+          obj.no_canc ??
+          obj.No_Canc ??
+          obj.noCanc ??
+          obj.CitNumCan ??
+          obj.citnumcan ??
+          obj.id_cancelacion ??
+          obj.data?.numero_cancelacion ??
+          obj.data?.numeroCancelacion ??
+          obj.data?.consecutivo_cancelacion ??
+          obj.data?.consecutivo ??
+          obj.data?.no_canc ??
+          obj.data?.CitNumCan;
+
+        if (
+          (typeof candidate === 'string' || typeof candidate === 'number') &&
+          /^\d+$/.test(String(candidate).trim()) &&
+          Number(candidate) > 0
+        ) {
+          return parseInt(String(candidate).trim(), 10);
+        }
+
+        const textDesc = String(obj?.soap?.descripcion || obj?.mensaje || obj?.message || obj?.respuesta || '');
+        const match = textDesc.match(/(?:cancelaci[oó]n|consecutivo|no\.?\s*canc\.?)\s*(?:#|no\.?|num\.?|es|:)?\s*(\d{2,})/i);
+        if (match && match[1] && Number(match[1]) !== cleanCita) {
+          return parseInt(match[1], 10);
+        }
+        return undefined;
+      };
+
+      numeroCancelacion = extractCancelNum(resData);
+
+      // Si no vino en el POST, consultar verificar_cancelacion/{cita} para capturar el No.Canc. generado en Hosvital
+      if (isSuccess && !numeroCancelacion) {
+        const verifData = await this.verificarCancelacion(cleanCita);
+        if (verifData) {
+          console.log(`🔍 [HunApi] Verificación de cancelación #${cleanCita}:`, verifData);
+          numeroCancelacion = extractCancelNum(verifData);
         }
       }
 
+      if (isSuccess) {
+        console.log(
+          `🎉 [HunApi] ¡CITA #${cleanCita} CANCELADA EN HOSVITAL!${numeroCancelacion ? ` No.Canc: #${numeroCancelacion}` : ''}`
+        );
+      } else {
+        console.warn(
+          `⚠️ [HunApi] Hosvital reportó novedad al cancelar cita #${cleanCita}:`,
+          resData?.soap?.descripcion || resData?.mensaje || resData?.message || resData
+        );
+      }
+
       return {
-        success: false,
-        message: soapRes.respuesta || soapRes.error || 'No se pudo cancelar la cita en Hosvital',
-        soap: soapRes,
+        success: isSuccess,
+        message:
+          resData?.soap?.descripcion ||
+          resData?.mensaje ||
+          resData?.message ||
+          (isSuccess ? 'Cita cancelada con éxito en Hosvital' : 'No se pudo cancelar la cita en Hosvital'),
+        numeroCancelacion,
+        soap: resData?.soap,
+        data: resData,
       };
     } catch (error: any) {
-      console.error(`❌ [Hosvital] Error ejecutando cancelación WSCancita:`, error.message);
+      console.error(`❌ [HunApi] Error cancelando cita #${cleanCita}:`, error.response?.data || error.message);
       return {
         success: false,
-        message: error.message,
+        message: error.response?.data?.mensaje || error.response?.data?.message || error.message,
+        soap: error.response?.data?.soap,
       };
     }
   }

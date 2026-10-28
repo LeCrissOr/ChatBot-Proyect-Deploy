@@ -236,7 +236,7 @@ export class WebhookController {
       cleanDocLookup.length >= 5
         ? await store.findContactByDocument(cleanDocLookup)
         : undefined;
-    const registrationData = {
+    const registrationData: any = {
       ...conversation.flowData,
       contactId: contact.id,
       contactPhone: contact.phone,
@@ -252,6 +252,12 @@ export class WebhookController {
         ? { patientFound: false, lookupDocument: cleanDocLookup }
         : {}),
     };
+    if (!registrationData.patientDoc && contact.documentId) {
+      registrationData.patientDoc = contact.documentId;
+    }
+    if (!registrationData.patientDocumentType && contact.documentType) {
+      registrationData.patientDocumentType = contact.documentType;
+    }
     const botResult = await DecisionTreeService.processMessage(
       text,
       conversation.currentFlow,
@@ -388,7 +394,8 @@ export class WebhookController {
         botResult.rescheduleAppointment.appointmentId,
         botResult.rescheduleAppointment.newDateTime,
         botResult.rescheduleAppointment.newDoctorName,
-        botResult.rescheduleAppointment.reason
+        botResult.rescheduleAppointment.reason,
+        botResult.rescheduleAppointment.newNumeroCitaHosvital
       );
       if (updated) {
         console.log(`🔄 Cita reprogramada exitosamente en HUN: ${updated.id} (Motivo: ${botResult.rescheduleAppointment.reason || 'No especificado'})`);
@@ -404,29 +411,31 @@ export class WebhookController {
       );
       if (cancelled) {
         console.log(`❌ Cita cancelada por usuario en HUN: ${cancelled.id} (Motivo: ${botResult.cancelAppointmentReason || 'No especificado'})`);
+        AgendaService.markSlotAsAvailable(cancelled.dateTime, cancelled.doctorName, cancelled.doctorId);
         socketService.emitAppointmentsUpdated(store.getAllAppointments());
         socketService.emitContactsUpdated(store.getAllContacts());
 
-        // Si la cita tenía ID oficial de Hosvital, sincronizar cancelación con la API del hospital
-        const numCita =
-          cancelled.numeroCitaHosvital ||
-          (cancelled.referralCode && cancelled.referralCode.startsWith('HOSVITAL-')
-            ? parseInt(cancelled.referralCode.replace('HOSVITAL-', ''), 10)
-            : undefined);
+        // Si la cancelación en Hosvital aún no se envió sincrónicamente en el árbol de decisión, sincronizarla aquí
+        if (!botResult.updatedData?.hosvitalCancelAlreadySent) {
+          const numCita =
+            cancelled.numeroCitaHosvital ||
+            (cancelled.referralCode && cancelled.referralCode.startsWith('HOSVITAL-')
+              ? parseInt(cancelled.referralCode.replace('HOSVITAL-', ''), 10)
+              : undefined);
 
-        if (numCita && !isNaN(numCita)) {
-          const docType = contact.documentType || (conversation?.flowData as any)?.documentType || 'CC';
-          const docId = contact.documentId || (conversation?.flowData as any)?.documentNumber || (conversation?.flowData as any)?.patientDocument || '79810144';
-          HunApiService.cancelarCita({
-            cita: numCita,
-            tipo_documento: docType,
-            documento: docId,
-            motivoCancelacion: '1',
-          }).then((resp) => {
-            console.log(`📡 [Hosvital] Solicitud de cancelación enviada para cita #${numCita}:`, resp.message);
-          }).catch((err) => {
-            console.warn(`⚠️ [Hosvital] Error enviando cancelación a Hosvital:`, err.message);
-          });
+          if (numCita && !isNaN(numCita)) {
+            const docType = contact.documentType || (conversation?.flowData as any)?.patientDocumentType || (conversation?.flowData as any)?.documentType || 'CC';
+            const docId = contact.documentId || (conversation?.flowData as any)?.patientDoc || (conversation?.flowData as any)?.documentNumber || '79810144';
+            HunApiService.cancelarCita({
+              cita: numCita,
+              tipo_documento: docType,
+              documento: docId,
+            }).then((resp) => {
+              console.log(`📡 [Hosvital] Solicitud de cancelación enviada para cita #${numCita}:`, resp.message);
+            }).catch((err) => {
+              console.warn(`⚠️ [Hosvital] Error enviando cancelación a Hosvital:`, err.message);
+            });
+          }
         }
       }
     }

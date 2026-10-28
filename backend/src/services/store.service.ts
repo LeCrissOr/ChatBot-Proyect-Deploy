@@ -307,6 +307,11 @@ class DataStore {
       userTypeId: item.userTypeId || item.contact.userTypeId || undefined,
       userTypeCode: item.userType?.code || item.contact?.userType?.code || 'PARTICULAR',
       userTypeName: item.userType?.name || item.contact?.userType?.name || 'Paciente Particular',
+      numeroCitaHosvital:
+        (item as any).numeroCitaHosvital ||
+        (item.referralCode && item.referralCode.startsWith('HOSVITAL-')
+          ? parseInt(item.referralCode.replace('HOSVITAL-', ''), 10)
+          : undefined),
     })) as AppointmentData[];
 
     const quotes = await this.prisma.surgicalQuote.findMany({
@@ -1389,13 +1394,18 @@ class DataStore {
     id: string,
     dateTime: Date,
     doctorName?: string,
-    reason?: string
+    reason?: string,
+    newNumeroCitaHosvital?: number
   ): Promise<AppointmentData | undefined> {
     const apt = this.appointments.find((a) => a.id === id);
     if (apt) {
       const previousStatus = apt.status;
       apt.dateTime = dateTime;
       if (doctorName) apt.doctorName = doctorName;
+      if (newNumeroCitaHosvital) {
+        apt.numeroCitaHosvital = newNumeroCitaHosvital;
+        apt.referralCode = `HOSVITAL-${newNumeroCitaHosvital}`;
+      }
       apt.status = 'RESCHEDULED';
       apt.wasRescheduled = true;
       if (reason) {
@@ -1420,6 +1430,7 @@ class DataStore {
             data: {
               dateTime,
               ...(doctorName ? { doctorName } : {}),
+              ...(newNumeroCitaHosvital ? { referralCode: `HOSVITAL-${newNumeroCitaHosvital}` } : {}),
               status: 'RESCHEDULED',
               ...(reason ? { paymentStatus: `Reprogramado: ${reason}` } : {}),
             },
