@@ -31,7 +31,7 @@ export class MetricsController {
       const id = String(req.params.id);
       await store.deleteContact(id);
       socketService.emitContactsUpdated(store.getAllContacts());
-      socketService.emitConversationUpdated(null);
+      socketService.emitConversationsCleared();
       socketService.emitAppointmentsUpdated(store.getAllAppointments());
       socketService.emitQuotesUpdated(store.getAllQuotes());
       socketService.emitTicketsUpdated(store.getAllTickets());
@@ -47,7 +47,7 @@ export class MetricsController {
       const ids = (req.body?.ids as string[]) || (req.query?.ids ? String(req.query.ids).split(',') : []);
       const result = await store.deleteContacts(ids);
       socketService.emitContactsUpdated(store.getAllContacts());
-      socketService.emitConversationUpdated(null);
+      socketService.emitConversationsCleared();
       socketService.emitAppointmentsUpdated(store.getAllAppointments());
       socketService.emitQuotesUpdated(store.getAllQuotes());
       socketService.emitTicketsUpdated(store.getAllTickets());

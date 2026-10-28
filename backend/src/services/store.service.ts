@@ -967,20 +967,42 @@ class DataStore {
     this.tickets = this.tickets.filter((t) => !targetSet.has(t.contactId));
     this.npsSurveys = this.npsSurveys.filter((n) => !targetSet.has(n.contactId));
 
-    // 5. Eliminar de la memoria
+    // 5. Eliminar de la memoria y recolectar teléfonos para limpiar la cola de mensajes
+    const deletedPhones: string[] = [];
     let deletedCount = 0;
     for (const id of toDeleteIds) {
+      const c = this.contacts.get(id);
+      if (c?.phone) {
+        deletedPhones.push(c.phone);
+        if (c.phone.startsWith('57') && c.phone.length === 12) {
+          deletedPhones.push(c.phone.slice(2));
+        }
+      }
       if (this.contacts.delete(id)) {
         deletedCount++;
       }
     }
 
-    // 6. Eliminar de PostgreSQL (Cascade eliminará conversaciones, mensajes, citas, etc.)
+    // 6. Eliminar de PostgreSQL (Cascade eliminará conversaciones, mensajes, citas, etc.) y limpiar cola de mensajes entrantes
     if (this.isPrismaConnected && this.prisma) {
       try {
         if (ids.length === 0) {
+          await this.prisma.incomingMessageJob.deleteMany().catch(() => null);
+          await this.prisma.message.deleteMany().catch(() => null);
+          await this.prisma.conversation.deleteMany().catch(() => null);
           await this.prisma.contact.deleteMany();
         } else {
+          if (deletedPhones.length > 0) {
+            await this.prisma.incomingMessageJob.deleteMany({
+              where: { phone: { in: deletedPhones } },
+            }).catch(() => null);
+          }
+          await this.prisma.message.deleteMany({
+            where: { conversationId: { in: Array.from(convIdsToDelete) } },
+          }).catch(() => null);
+          await this.prisma.conversation.deleteMany({
+            where: { contactId: { in: toDeleteIds } },
+          }).catch(() => null);
           await this.prisma.contact.deleteMany({ where: { id: { in: toDeleteIds } } });
         }
       } catch (error) {
@@ -1145,7 +1167,11 @@ class DataStore {
       deletedCount = this.conversations.size;
       this.conversations.clear();
       this.messages = [];
-      if (this.isPrismaConnected && this.prisma) void this.prisma.conversation.deleteMany().catch((error) => console.error('Error limpiando conversaciones en PostgreSQL:', error));
+      if (this.isPrismaConnected && this.prisma) {
+        void this.prisma.incomingMessageJob.deleteMany().catch(() => null);
+        void this.prisma.message.deleteMany().catch(() => null);
+        void this.prisma.conversation.deleteMany().catch((error) => console.error('Error limpiando conversaciones en PostgreSQL:', error));
+      }
     } else {
       const closedIds = new Set<string>();
       for (const [id, conv] of this.conversations.entries()) {

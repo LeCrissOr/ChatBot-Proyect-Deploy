@@ -140,11 +140,9 @@ if (fs.existsSync(frontendIndexHtml)) {
   });
 }
 
-// Conectar mensajes de Baileys al motor del HUN (procesamiento reactivo en tiempo real)
+// Conectar mensajes de Baileys al motor del HUN (procesamiento reactivo en tiempo real sin doble encolamiento)
 baileysService.setMessageHandler(async (phone, text, name, messageId) => {
   console.log(`⚡ [Baileys -> Motor HUN] Procesando mensaje en vivo de ${phone} (${name}): "${text}"`);
-  // Encolar asíncronamente en PostgreSQL para auditoría y persistencia sin bloquear el flujo en tiempo real
-  void incomingMessageQueue.enqueue({ phone, text, senderName: name, waMessageId: messageId, sourceChannel: 'BAILEYS' }).catch(() => undefined);
   return WebhookController.processMessage(phone, text, name, messageId, 'BAILEYS');
 });
 

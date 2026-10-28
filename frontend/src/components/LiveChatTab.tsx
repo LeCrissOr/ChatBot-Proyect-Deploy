@@ -62,7 +62,7 @@ export const LiveChatTab: React.FC = () => {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [showClearModal, setShowClearModal] = useState(false);
-  const [clearScope, setClearScope] = useState<'CLOSED' | 'ALL'>('CLOSED');
+  const [clearScope, setClearScope] = useState<'CLOSED' | 'ALL'>('ALL');
   const [isClearing, setIsClearing] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showActionsMenu, setShowActionsMenu] = useState(false);
@@ -94,7 +94,10 @@ export const LiveChatTab: React.FC = () => {
       setConversations(data);
       setContacts(contactsData);
       setAppointments(aptsData);
-      if (!selectedConvId && data.length > 0) {
+      if (data.length === 0) {
+        setSelectedConvId(null);
+        setMessages([]);
+      } else if (!selectedConvId || !data.some((c) => c.id === selectedConvId)) {
         setSelectedConvId(data[0].id);
       }
     } catch (err) {
@@ -120,12 +123,18 @@ export const LiveChatTab: React.FC = () => {
     });
 
     socket.on('conversation_updated', (updated: Conversation) => {
+      if (!updated || !updated.id) {
+        loadConversations();
+        return;
+      }
       setConversations((prev) =>
         prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c))
       );
     });
 
     socket.on('conversations_cleared', () => {
+      setMessages([]);
+      setSelectedConvId(null);
       loadConversations();
     });
 

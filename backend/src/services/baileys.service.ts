@@ -157,12 +157,22 @@ class BaileysService {
         }
       });
 
-      // Escucha de mensajes entrantes
+      // Escucha de mensajes entrantes en tiempo real (ignorar 'append' que son sincronizaciones de historial pasado de WhatsApp)
       this.sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify' && type !== 'append') return;
+        if (type !== 'notify') return;
+
+        const nowSeconds = Math.floor(Date.now() / 1000);
 
         for (const msg of messages) {
           if (!msg.message) continue;
+
+          // Ignorar mensajes históricos sincronizados por WhatsApp con antigüedad mayor a 2 minutos
+          const rawTs = msg.messageTimestamp;
+          const msgTsSeconds = typeof rawTs === 'number' ? rawTs : typeof rawTs === 'object' && rawTs !== null && 'low' in rawTs ? Number((rawTs as any).low) : Number(rawTs || 0);
+          if (msgTsSeconds > 0 && nowSeconds - msgTsSeconds > 120) {
+            console.log(`ℹ️ [Baileys] Mensaje histórico antiguo ignorado (${nowSeconds - msgTsSeconds}s de antigüedad): ${msg.key?.id}`);
+            continue;
+          }
 
           // Ignorar estados de WhatsApp y mensajes de grupos
           const remoteJid = msg.key.remoteJid || '';
