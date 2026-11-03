@@ -50,6 +50,11 @@ export interface FlowStateData {
   patientEmail?: string;
   residenceCity?: string;
   residenceAddress?: string;
+  epsCode?: string;
+  contractCode?: string;
+  userType?: string;
+  userTypeCode?: string;
+  userTypeName?: string;
   patientFound?: boolean;
   requestForSelf?: boolean;
   registrationComplete?: boolean;

@@ -106,7 +106,7 @@ export class HosvitalSoapService {
     const hora = params.hora.includes(':') ? (params.hora.length === 5 ? `${params.hora}:00` : params.hora) : '08:00:00';
     const procedimiento = (params.procedimiento || '890202').trim();
     const usuario = params.usuario || CONFIG.HOSVITAL_MAEDIR_USER || 'Hosvital';
-    const eps = params.eps || CONFIG.HUN_DEFAULT_EPS || 'HUN22';
+    const eps = params.eps || CONFIG.HUN_CONTRATO_PARTICULAR || CONFIG.HUN_DEFAULT_EPS || 'HUN002';
     const tiempoAtencion = params.tiempoAtencion || 20;
 
     const xmlPayload = `<?xml version="1.0" encoding="utf-8"?>

@@ -32,7 +32,10 @@ export const CONFIG = {
   HUN_API_URL: process.env.HUN_API_URL || 'http://190.109.10.204',
   HUN_API_KEY: process.env.HUN_API_KEY || 'HospitalUniversitarioNacionaldeColombia',
   HUN_API_TIMEOUT_MS: parseInt(process.env.HUN_API_TIMEOUT_MS || '15000', 10),
-  HUN_DEFAULT_EPS: process.env.HUN_DEFAULT_EPS || 'HUN25',
+  HUN_DEFAULT_EPS: process.env.HUN_DEFAULT_EPS || 'HUN002', // Particular por defecto
+  HUN_CONTRATO_PARTICULAR: process.env.HUN_CONTRATO_PARTICULAR || 'HUN002',
+  HUN_CONTRATO_EMPLEADOS: process.env.HUN_CONTRATO_EMPLEADOS || 'HUN25',
+  HUN_CONTRATO_EGRESADOS: process.env.HUN_CONTRATO_EGRESADOS || 'HUN323',
   HOSVITAL_ENABLED: process.env.HOSVITAL_ENABLED !== 'false',
 
   // Rutas de Endpoints HUN / Hosvital

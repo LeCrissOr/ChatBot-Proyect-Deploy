@@ -1222,6 +1222,7 @@ export class DecisionTreeService {
       let userType = 'PARTICULAR';
       let userTypeCode = 'PARTICULAR';
       let userTypeName = 'Paciente Particular';
+      let epsCode = CONFIG.HUN_CONTRATO_PARTICULAR || 'HUN002';
       let profileNote = '✅ Perfil registrado: *Paciente Particular* (Tarifa Estándar HUN).';
 
       if (
@@ -1233,6 +1234,7 @@ export class DecisionTreeService {
         userType = 'PARTICULAR';
         userTypeCode = 'PARTICULAR';
         userTypeName = 'Paciente Particular';
+        epsCode = CONFIG.HUN_CONTRATO_PARTICULAR || 'HUN002';
         profileNote = '✅ Perfil registrado: *Paciente Particular* (Tarifa Estándar HUN).';
       } else if (
         cleanNum === '2' ||
@@ -1244,6 +1246,7 @@ export class DecisionTreeService {
         userType = 'EGRESADO_UNAL';
         userTypeCode = 'EGRESADO_UNAL';
         userTypeName = 'Egresado Universidad Nacional de Colombia';
+        epsCode = CONFIG.HUN_CONTRATO_EGRESADOS || 'HUN323';
         profileNote = '🎓 Perfil registrado: *Egresado Universidad Nacional de Colombia*.\n¡Tienes acceso a tarifas preferenciales institucionales de la UNAL!';
       } else if (
         cleanNum === '3' ||
@@ -1256,6 +1259,7 @@ export class DecisionTreeService {
         userType = 'COLABORADOR_HUN';
         userTypeCode = 'COLABORADOR_HUN';
         userTypeName = 'Colaborador HUN';
+        epsCode = CONFIG.HUN_CONTRATO_EMPLEADOS || 'HUN25';
         profileNote = '🏥 Perfil registrado: *Colaborador HUN*.\n¡Tienes acceso al beneficio de tarifa institucional HUN 2024!';
       } else if (
         cleanNum === '4' ||
@@ -1267,6 +1271,7 @@ export class DecisionTreeService {
         userType = 'OTRO';
         userTypeCode = 'OTRO';
         userTypeName = 'Otro (Contactar con un asesor)';
+        epsCode = CONFIG.HUN_CONTRATO_PARTICULAR || 'HUN002';
         profileNote = 'Has seleccionado la opción *Otro* para contactar con un asesor del Hospital Universitario Nacional 🏥.';
       } else {
         return this.sanitizeResult({
@@ -1315,6 +1320,8 @@ export class DecisionTreeService {
           userType,
           userTypeCode,
           userTypeName,
+          epsCode,
+          contractCode: epsCode,
           fallbackCount: 0,
         },
       });
@@ -2519,6 +2526,20 @@ export class DecisionTreeService {
             updatedData: { ...data, fallbackCount: 0 },
           });
         }
+
+        // Sincronizar al paciente en CAPBAS de Hosvital mediante WSCrePac (Gx_mode = 'INS')
+        await HunApiService.crearOActualizarPacienteHosvital({
+          tipoDocumento: data.patientDocumentType || 'CC',
+          documento: data.patientDoc || '',
+          nombreCompleto: data.patientName || '',
+          fechaNacimiento: data.patientBirthDate,
+          sexo: data.patientGender,
+          direccion: data.residenceAddress,
+          telefono: data.patientPhone || data.applicantPhone,
+          celular: data.patientPhone || data.applicantPhone,
+          email: data.patientEmail || data.applicantEmail,
+          modo: 'INS',
+        });
 
         const root = this.getRootMenu(
           data.applicantName || data.patientName,
@@ -3866,7 +3887,13 @@ export class DecisionTreeService {
                 hora: horaStr,
                 procedimiento: resolvedCups,
                 tiempo_atencion: dynamicSlot.tiempoAtencion || 30,
-                eps: data.epsCode || CONFIG.HUN_DEFAULT_EPS || 'HUN25',
+                eps:
+                  data.epsCode ||
+                  (data.userTypeCode === 'COLABORADOR_HUN'
+                    ? CONFIG.HUN_CONTRATO_EMPLEADOS || 'HUN25'
+                    : data.userTypeCode === 'EGRESADO_UNAL'
+                    ? CONFIG.HUN_CONTRATO_EGRESADOS || 'HUN323'
+                    : CONFIG.HUN_CONTRATO_PARTICULAR || CONFIG.HUN_DEFAULT_EPS || 'HUN002'),
               });
 
               if (asignarRes.success && asignarRes.numeroCitaHosvital) {
@@ -4855,7 +4882,7 @@ export class DecisionTreeService {
             if (first.Nombre_Paciente && (!data.patientName || data.patientName.toLowerCase() === 'paciente')) {
               data.patientName = first.Nombre_Paciente.trim();
             }
-            if (first.Cod_Eps) {
+            if (first.Cod_Eps && !data.epsCode) {
               data.epsCode = first.Cod_Eps.trim();
               data.hasActiveEps = true;
             }
@@ -5215,7 +5242,13 @@ export class DecisionTreeService {
                 hora: horaStr,
                 procedimiento: resolvedCups,
                 tiempo_atencion: selectedDyn.tiempoAtencion || 20,
-                eps: data.epsCode || CONFIG.HUN_DEFAULT_EPS || 'HUN25',
+                eps:
+                  data.epsCode ||
+                  (data.userTypeCode === 'COLABORADOR_HUN'
+                    ? CONFIG.HUN_CONTRATO_EMPLEADOS || 'HUN25'
+                    : data.userTypeCode === 'EGRESADO_UNAL'
+                    ? CONFIG.HUN_CONTRATO_EGRESADOS || 'HUN323'
+                    : CONFIG.HUN_CONTRATO_PARTICULAR || CONFIG.HUN_DEFAULT_EPS || 'HUN002'),
               });
 
               if (asignarRes.success === true && Number.isSafeInteger(asignarRes.numeroCitaHosvital) && Number(asignarRes.numeroCitaHosvital) > 0) {
