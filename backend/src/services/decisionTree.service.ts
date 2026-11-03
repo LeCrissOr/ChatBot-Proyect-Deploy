@@ -86,7 +86,14 @@ export class DecisionTreeService {
     }
 
     // 1. Detección proactiva de idioma extranjero (E-008)
-    if (this.isEnglish(lower) && currentFlow === 'IDLE') {
+    // Solo aplica al iniciar la conversación o en el menú de bienvenida, nunca cuando el usuario está diligenciando datos de un formulario.
+    const isInitialStep =
+      !currentStep ||
+      currentStep === 'ROOT' ||
+      currentStep === 'WELCOME' ||
+      currentStep === 'START' ||
+      currentStep === 'SELECT_USER_TYPE';
+    if (this.isEnglish(lower) && currentFlow === 'IDLE' && isInitialStep) {
       return this.sanitizeResult({
         replyMessages: [
           'Hello! Welcome to Hospital Universitario Nacional (HUN) Particular Patient Service 🏥',
@@ -6278,8 +6285,11 @@ export class DecisionTreeService {
   }
 
   private static isEnglish(text: string): boolean {
-    const englishWords = ['hello', 'hi', 'appointment', 'doctor', 'help', 'hospital', 'surgery', 'good morning', 'good afternoon'];
-    return englishWords.some((w) => text.includes(w));
+    // Usar límites de palabra completa (\b) para evitar falsos positivos
+    // (ej: 'hi' contenido dentro de nombres como 'Cristhian' o palabras como 'Chile')
+    const englishWordRegex =
+      /\b(hello|hi|hey|good\s+morning|good\s+afternoon|good\s+evening|appointment|appointments|doctor|specialist|hospital|surgery|schedule|reschedule|cancel\s+appointment)\b/i;
+    return englishWordRegex.test(text);
   }
 
   /**
