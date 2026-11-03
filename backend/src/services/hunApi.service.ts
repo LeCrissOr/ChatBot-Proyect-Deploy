@@ -733,4 +733,462 @@ export class HunApiService {
       return this.preparacionesCache?.items || [];
     }
   }
+
+  /**
+   * Normaliza el tipo de documento para la tabla CAPBAS de Hosvital (CHAR(2): CC, TI, CE, PA, RC, PT, PE)
+   */
+  public static normalizeCapbasDocType(docType?: string | null): string {
+    const std = normalizeHosvitalDocType(docType);
+    if (std === 'PPT') return 'PT';
+    if (std === 'PEP') return 'PE';
+    if (std === 'NUIP') return 'RC';
+    return std.slice(0, 2);
+  }
+
+  /**
+   * Extrae el valor de una etiqueta XML de la respuesta SOAP de WSCrePac
+   */
+  private static extractSoapTag(xml: string, tag: string): string {
+    const regex = new RegExp(`<(?:\\w+:)?${tag}[^>]*>([\\s\\S]*?)<\\/(?:\\w+:)?${tag}>`, 'i');
+    const match = xml.match(regex);
+    if (!match) return '';
+    return match[1]
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .trim();
+  }
+
+  /**
+   * Escapa caracteres especiales para XML SOAP
+   */
+  private static escapeXml(val: string | number | undefined | null): string {
+    return String(val ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  /**
+   * Divide un nombre completo en Mpnom1, Mpnom2, Mpape1, Mpape2 para CAPBAS de Hosvital
+   */
+  public static splitFullNameForCapbas(fullName: string): {
+    mpnom1: string;
+    mpnom2: string;
+    mpape1: string;
+    mpape2: string;
+  } {
+    const parts = String(fullName || '')
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, ' ')
+      .split(' ')
+      .filter(Boolean);
+
+    if (parts.length === 0) {
+      return { mpnom1: 'PACIENTE', mpnom2: '', mpape1: 'HUN', mpape2: '' };
+    }
+    if (parts.length === 1) {
+      return { mpnom1: parts[0].slice(0, 20), mpnom2: '', mpape1: parts[0].slice(0, 20), mpape2: '' };
+    }
+    if (parts.length === 2) {
+      return { mpnom1: parts[0].slice(0, 20), mpnom2: '', mpape1: parts[1].slice(0, 20), mpape2: '' };
+    }
+    if (parts.length === 3) {
+      return {
+        mpnom1: parts[0].slice(0, 20),
+        mpnom2: '',
+        mpape1: parts[1].slice(0, 20),
+        mpape2: parts[2].slice(0, 30),
+      };
+    }
+    return {
+      mpnom1: parts[0].slice(0, 20),
+      mpnom2: parts.slice(1, parts.length - 2).join(' ').slice(0, 30),
+      mpape1: parts[parts.length - 2].slice(0, 20),
+      mpape2: parts[parts.length - 1].slice(0, 30),
+    };
+  }
+
+  /**
+   * Normaliza una fecha de nacimiento (DD/MM/YYYY, DD-MM-YYYY o YYYY-MM-DD) al formato ISO YYYY-MM-DD para WSCrePac
+   */
+  public static normalizeBirthDateToIso(raw?: string | Date | null): string | undefined {
+    if (!raw) return undefined;
+    if (raw instanceof Date && !isNaN(raw.getTime())) {
+      return raw.toISOString().split('T')[0];
+    }
+    const clean = String(raw).trim();
+    const dmy = clean.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+    if (dmy) {
+      return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+    }
+    const ymd = clean.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (ymd && ymd[1] !== '0000') {
+      return `${ymd[1]}-${ymd[2]}-${ymd[3]}`;
+    }
+    return undefined;
+  }
+
+  /**
+   * 10. Consulta un paciente en la tabla maestra CAPBAS de Hosvital mediante WSCrePac (Gx_mode = 'DSP')
+   */
+  public static async consultarPacienteHosvital(
+    tipoDocumento: string,
+    documento: string
+  ): Promise<{
+    exists: boolean;
+    codRespuesta: number;
+    respuesta: string;
+    empcod: string;
+    mpnhic: string;
+    mptdoc: string;
+    mpcedu: string;
+    mpnom1: string;
+    mpnom2: string;
+    mpape1: string;
+    mpape2: string;
+    fullName: string;
+    birthDateIso?: string;
+    birthDateFormatted?: string;
+    gender?: 'M' | 'F';
+    maritalStatus?: string;
+    occupationCode?: string;
+    address?: string;
+    cityCode?: string;
+    neighborhoodCode?: string;
+    phone?: string;
+    mobile?: string;
+    email?: string;
+    zona?: string;
+    mpusrprf?: string;
+  } | null> {
+    if (!CONFIG.HOSVITAL_ENABLED) return null;
+
+    const cleanTipo = this.normalizeCapbasDocType(tipoDocumento);
+    const cleanDoc = String(documento || '').replace(/[^0-9a-zA-Z]/g, '').trim();
+    if (!cleanDoc) return null;
+
+    const soapUrl = `${CONFIG.HOSVITAL_SOAP_BASE_URL}${CONFIG.HOSVITAL_SOAP_CREPAC_PATH || '/awscrepac'}`;
+    const xmlPayload = `<?xml version="1.0" encoding="utf-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:hos="Hosvital8W">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <hos:WSCrePac.Execute>
+      <hos:Empcod>${this.escapeXml(CONFIG.HOSVITAL_EMPRESA || '1')}</hos:Empcod>
+      <hos:Mpnhic>${this.escapeXml(cleanDoc)}</hos:Mpnhic>
+      <hos:Mptdoc>${this.escapeXml(cleanTipo)}</hos:Mptdoc>
+      <hos:Mpcedu>${this.escapeXml(cleanDoc)}</hos:Mpcedu>
+      <hos:Mpnom1></hos:Mpnom1>
+      <hos:Mpnom2></hos:Mpnom2>
+      <hos:Mpape1></hos:Mpape1>
+      <hos:Mpape2></hos:Mpape2>
+      <hos:Mpfchn>1990-01-01T00:00:00</hos:Mpfchn>
+      <hos:Mpsexo>M</hos:Mpsexo>
+      <hos:Mpestc>S</hos:Mpestc>
+      <hos:Mocodpri></hos:Mocodpri>
+      <hos:Mpdire></hos:Mpdire>
+      <hos:Ciudad></hos:Ciudad>
+      <hos:Barrio></hos:Barrio>
+      <hos:Mptele></hos:Mptele>
+      <hos:Mptele2></hos:Mptele2>
+      <hos:Mpmail></hos:Mpmail>
+      <hos:Zona></hos:Zona>
+      <hos:Tipoafiliacion></hos:Tipoafiliacion>
+      <hos:Tipopaciente></hos:Tipopaciente>
+      <hos:Mpusrprf></hos:Mpusrprf>
+      <hos:Gx_mode>DSP</hos:Gx_mode>
+    </hos:WSCrePac.Execute>
+  </soapenv:Body>
+</soapenv:Envelope>`;
+
+    try {
+      const response = await axios.post(soapUrl, xmlPayload, {
+        headers: {
+          'Content-Type': 'text/xml; charset=utf-8',
+          SOAPAction: 'Hosvital8Waction/AWSCREPAC.Execute',
+        },
+        timeout: 8000,
+      });
+
+      const rawXml = String(response.data || '');
+      const codRespuesta = parseInt(this.extractSoapTag(rawXml, 'Codrespuesta') || '0', 10);
+      const respuesta = this.extractSoapTag(rawXml, 'Respuesta');
+      const mpnhic = this.extractSoapTag(rawXml, 'Mpnhic');
+      const mptdoc = this.extractSoapTag(rawXml, 'Mptdoc') || cleanTipo;
+      const mpcedu = this.extractSoapTag(rawXml, 'Mpcedu') || cleanDoc;
+      const mpnom1 = this.extractSoapTag(rawXml, 'Mpnom1');
+      const mpnom2 = this.extractSoapTag(rawXml, 'Mpnom2');
+      const mpape1 = this.extractSoapTag(rawXml, 'Mpape1');
+      const mpape2 = this.extractSoapTag(rawXml, 'Mpape2');
+      const mpfchnRaw = this.extractSoapTag(rawXml, 'Mpfchn');
+      const mpsexoRaw = this.extractSoapTag(rawXml, 'Mpsexo').toUpperCase();
+      const mpestc = this.extractSoapTag(rawXml, 'Mpestc');
+      const mocodpri = this.extractSoapTag(rawXml, 'Mocodpri');
+      const mpdire = this.extractSoapTag(rawXml, 'Mpdire');
+      const ciudad = this.extractSoapTag(rawXml, 'Ciudad');
+      const barrio = this.extractSoapTag(rawXml, 'Barrio');
+      const mptele = this.extractSoapTag(rawXml, 'Mptele');
+      const mptele2 = this.extractSoapTag(rawXml, 'Mptele2');
+      const mpmail = this.extractSoapTag(rawXml, 'Mpmail');
+      const zona = this.extractSoapTag(rawXml, 'Zona');
+      const mpusrprf = this.extractSoapTag(rawXml, 'Mpusrprf');
+
+      const exists = Boolean(mpnhic && (mpnom1 || mpape1));
+      const fullName = [mpnom1, mpnom2, mpape1, mpape2].filter(Boolean).join(' ').trim();
+
+      let birthDateIso: string | undefined;
+      let birthDateFormatted: string | undefined;
+      if (mpfchnRaw && !mpfchnRaw.startsWith('0000-00-00')) {
+        const datePart = mpfchnRaw.split('T')[0];
+        const m = datePart.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (m) {
+          birthDateIso = datePart;
+          birthDateFormatted = `${m[3]}/${m[2]}/${m[1]}`;
+        }
+      }
+
+      const gender: 'M' | 'F' | undefined =
+        mpsexoRaw === 'M' || mpsexoRaw === 'F' ? (mpsexoRaw as 'M' | 'F') : undefined;
+
+      if (exists) {
+        console.log(
+          `✅ [HunApi:WSCrePac] Paciente encontrado en CAPBAS Hosvital: ${mptdoc} ${mpcedu} -> ${fullName} (Cod: ${codRespuesta})`
+        );
+      }
+
+      return {
+        exists,
+        codRespuesta,
+        respuesta,
+        empcod: this.extractSoapTag(rawXml, 'Empcod') || '1',
+        mpnhic,
+        mptdoc,
+        mpcedu,
+        mpnom1,
+        mpnom2,
+        mpape1,
+        mpape2,
+        fullName,
+        birthDateIso,
+        birthDateFormatted,
+        gender,
+        maritalStatus: mpestc || undefined,
+        occupationCode: mocodpri || undefined,
+        address: mpdire || undefined,
+        cityCode: ciudad || undefined,
+        neighborhoodCode: barrio || undefined,
+        phone: mptele || undefined,
+        mobile: mptele2 || undefined,
+        email: mpmail || undefined,
+        zona: zona || undefined,
+        mpusrprf: mpusrprf || undefined,
+      };
+    } catch (error: any) {
+      console.warn(`⚠️ [HunApi:WSCrePac] Error consultando paciente ${cleanTipo} ${cleanDoc} en Hosvital: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * 11. Crea o actualiza un paciente en la tabla maestra CAPBAS de Hosvital mediante WSCrePac (Gx_mode = 'INS')
+   * Según la documentación oficial de DigitalWare Hosvital-HIS:
+   * - Gx_mode = 'INS' inserta al paciente (Codrespuesta = 4) y si ya existe lo actualiza automáticamente (Codrespuesta = 5).
+   */
+  public static async crearOActualizarPacienteHosvital(input: {
+    tipoDocumento: string;
+    documento: string;
+    nombreCompleto: string;
+    primerNombre?: string;
+    segundoNombre?: string;
+    primerApellido?: string;
+    segundoApellido?: string;
+    fechaNacimiento?: string | Date;
+    sexo?: 'M' | 'F' | string;
+    estadoCivil?: string;
+    direccion?: string;
+    telefono?: string;
+    celular?: string;
+    email?: string;
+    modo?: 'INS' | 'UPD';
+  }): Promise<{
+    success: boolean;
+    codRespuesta: number;
+    respuesta: string;
+    action?: 'CREATED' | 'UPDATED' | 'ERROR';
+  }> {
+    if (!CONFIG.HOSVITAL_ENABLED) {
+      return {
+        success: false,
+        codRespuesta: 999,
+        respuesta: 'Integración Hosvital deshabilitada en configuración.',
+        action: 'ERROR',
+      };
+    }
+
+    const cleanTipo = this.normalizeCapbasDocType(input.tipoDocumento);
+    const cleanDoc = String(input.documento || '').replace(/[^0-9a-zA-Z]/g, '').trim();
+    if (!cleanDoc) {
+      return {
+        success: false,
+        codRespuesta: 1,
+        respuesta: 'Documento del paciente vacío.',
+        action: 'ERROR',
+      };
+    }
+
+    // 1. Consultar primero en modo DSP por si el paciente ya existe en CAPBAS, para preservar sus códigos e información base
+    const existing = await this.consultarPacienteHosvital(cleanTipo, cleanDoc);
+
+    // 2. Separar nombres y apellidos
+    const split = this.splitFullNameForCapbas(input.nombreCompleto || existing?.fullName || 'PACIENTE HUN');
+    const sameNameAsExisting =
+      existing?.exists &&
+      existing.fullName &&
+      input.nombreCompleto &&
+      existing.fullName.toUpperCase().replace(/\s+/g, ' ') ===
+        input.nombreCompleto.trim().toUpperCase().replace(/\s+/g, ' ');
+
+    const mpnom1 = (input.primerNombre || (sameNameAsExisting ? existing?.mpnom1 : '') || split.mpnom1 || 'PACIENTE')
+      .toUpperCase()
+      .slice(0, 20);
+    const mpnom2 = (
+      input.segundoNombre !== undefined
+        ? input.segundoNombre
+        : sameNameAsExisting
+        ? existing?.mpnom2 || ''
+        : split.mpnom2
+    )
+      .toUpperCase()
+      .slice(0, 30);
+    const mpape1 = (input.primerApellido || (sameNameAsExisting ? existing?.mpape1 : '') || split.mpape1 || mpnom1)
+      .toUpperCase()
+      .slice(0, 20);
+    const mpape2 = (
+      input.segundoApellido !== undefined
+        ? input.segundoApellido
+        : sameNameAsExisting
+        ? existing?.mpape2 || ''
+        : split.mpape2
+    )
+      .toUpperCase()
+      .slice(0, 30);
+
+    // 3. Fecha de nacimiento YYYY-MM-DDT00:00:00 (xsd:dateTime requerido por GeneXus)
+    const mpfchnDate =
+      this.normalizeBirthDateToIso(input.fechaNacimiento) ||
+      existing?.birthDateIso ||
+      '1990-01-01';
+    const mpfchn = mpfchnDate.includes('T') ? mpfchnDate : `${mpfchnDate}T00:00:00`;
+
+    // 4. Sexo (M o F) - obligatorio en CAPBAS
+    const rawSex = String(input.sexo || existing?.gender || '').trim().toUpperCase();
+    let mpsexo: 'M' | 'F';
+    if (rawSex.startsWith('F') || rawSex.includes('MUJER') || rawSex.includes('FEM')) {
+      mpsexo = 'F';
+    } else if (rawSex.startsWith('M') || rawSex.includes('HOMBRE') || rawSex.includes('MASC')) {
+      mpsexo = 'M';
+    } else {
+      mpsexo = mpnom1.endsWith('A') ? 'F' : 'M';
+    }
+
+    // 5. Campos complementarios parametrizados para HUN en CAPBAS
+    const mpestc = (input.estadoCivil || existing?.maritalStatus || 'S').slice(0, 1).toUpperCase();
+    const mocodpri = existing?.occupationCode || '9999';
+    const mpdire = (input.direccion || existing?.address || 'BOGOTA D.C.').trim().toUpperCase().slice(0, 50);
+    const ciudad = (existing?.cityCode || '1').trim();
+    const barrio = (existing?.neighborhoodCode || '9999').trim();
+    const cleanPhone = String(input.telefono || input.celular || existing?.phone || existing?.mobile || '0000000')
+      .replace(/[^\d+]/g, '')
+      .slice(0, 30);
+    const cleanMobile = String(input.celular || input.telefono || existing?.mobile || existing?.phone || cleanPhone)
+      .replace(/[^\d+]/g, '')
+      .slice(0, 30);
+    const mpmail = (input.email || existing?.email || 'notiene@hun.edu.co').trim().slice(0, 45);
+    const zona = existing?.zona || 'U';
+    const mpusrprf = existing?.mpusrprf || 'N';
+    const gxMode = input.modo || 'INS';
+
+    const soapUrl = `${CONFIG.HOSVITAL_SOAP_BASE_URL}${CONFIG.HOSVITAL_SOAP_CREPAC_PATH || '/awscrepac'}`;
+    const xmlPayload = `<?xml version="1.0" encoding="utf-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:hos="Hosvital8W">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <hos:WSCrePac.Execute>
+      <hos:Empcod>${this.escapeXml(CONFIG.HOSVITAL_EMPRESA || '1')}</hos:Empcod>
+      <hos:Mpnhic>${this.escapeXml(cleanDoc)}</hos:Mpnhic>
+      <hos:Mptdoc>${this.escapeXml(cleanTipo)}</hos:Mptdoc>
+      <hos:Mpcedu>${this.escapeXml(cleanDoc)}</hos:Mpcedu>
+      <hos:Mpnom1>${this.escapeXml(mpnom1)}</hos:Mpnom1>
+      <hos:Mpnom2>${this.escapeXml(mpnom2)}</hos:Mpnom2>
+      <hos:Mpape1>${this.escapeXml(mpape1)}</hos:Mpape1>
+      <hos:Mpape2>${this.escapeXml(mpape2)}</hos:Mpape2>
+      <hos:Mpfchn>${this.escapeXml(mpfchn)}</hos:Mpfchn>
+      <hos:Mpsexo>${this.escapeXml(mpsexo)}</hos:Mpsexo>
+      <hos:Mpestc>${this.escapeXml(mpestc)}</hos:Mpestc>
+      <hos:Mocodpri>${this.escapeXml(mocodpri)}</hos:Mocodpri>
+      <hos:Mpdire>${this.escapeXml(mpdire)}</hos:Mpdire>
+      <hos:Ciudad>${this.escapeXml(ciudad)}</hos:Ciudad>
+      <hos:Barrio>${this.escapeXml(barrio)}</hos:Barrio>
+      <hos:Mptele>${this.escapeXml(cleanPhone)}</hos:Mptele>
+      <hos:Mptele2>${this.escapeXml(cleanMobile)}</hos:Mptele2>
+      <hos:Mpmail>${this.escapeXml(mpmail)}</hos:Mpmail>
+      <hos:Zona>${this.escapeXml(zona)}</hos:Zona>
+      <hos:Tipoafiliacion></hos:Tipoafiliacion>
+      <hos:Tipopaciente></hos:Tipopaciente>
+      <hos:Mpusrprf>${this.escapeXml(mpusrprf)}</hos:Mpusrprf>
+      <hos:Gx_mode>${this.escapeXml(gxMode)}</hos:Gx_mode>
+    </hos:WSCrePac.Execute>
+  </soapenv:Body>
+</soapenv:Envelope>`;
+
+    console.log(`\n======================================================`);
+    console.log(`📡 [HunApi:WSCrePac] SINCRONIZANDO PACIENTE EN CAPBAS HOSVITAL (${gxMode})`);
+    console.log(`📍 Endpoint SOAP: ${soapUrl}`);
+    console.log(`👤 Paciente: ${cleanTipo} ${cleanDoc} - ${mpnom1} ${mpnom2} ${mpape1} ${mpape2} (${mpsexo}, Nac: ${mpfchnDate})`);
+    console.log(`======================================================`);
+
+    try {
+      const response = await axios.post(soapUrl, xmlPayload, {
+        headers: {
+          'Content-Type': 'text/xml; charset=utf-8',
+          SOAPAction: 'Hosvital8Waction/AWSCREPAC.Execute',
+        },
+        timeout: 10000,
+      });
+
+      const rawXml = String(response.data || '');
+      const codRespuesta = parseInt(this.extractSoapTag(rawXml, 'Codrespuesta') || '0', 10);
+      const respuesta = this.extractSoapTag(rawXml, 'Respuesta');
+
+      const isSuccess = codRespuesta === 4 || codRespuesta === 5;
+      const action: 'CREATED' | 'UPDATED' | 'ERROR' =
+        codRespuesta === 4 ? 'CREATED' : codRespuesta === 5 ? 'UPDATED' : 'ERROR';
+
+      if (isSuccess) {
+        console.log(`🎉 [HunApi:WSCrePac] Éxito en CAPBAS Hosvital (Código ${codRespuesta} - ${action}): ${respuesta}`);
+      } else {
+        console.warn(`⚠️ [HunApi:WSCrePac] Novedad en CAPBAS Hosvital (Código ${codRespuesta}): ${respuesta}`);
+      }
+
+      return {
+        success: isSuccess,
+        codRespuesta,
+        respuesta,
+        action,
+      };
+    } catch (error: any) {
+      console.error(`❌ [HunApi:WSCrePac] Error HTTP sincronizando paciente ${cleanTipo} ${cleanDoc}:`, error.message);
+      return {
+        success: false,
+        codRespuesta: 999,
+        respuesta: error.message || 'Error de conexión con WSCrePac en Hosvital',
+        action: 'ERROR',
+      };
+    }
+  }
 }

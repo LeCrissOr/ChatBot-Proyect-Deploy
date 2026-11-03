@@ -52,12 +52,13 @@ export const CONFIG = {
   HUN_INTEGRACION_API_KEY: process.env.HUN_INTEGRACION_API_KEY || 'zegaqdHboAHMNl6T337pwGmy7sqFLXbFtrd3Agp3LWQ',
   HUN_INTEGRACION_TIMEOUT_MS: parseInt(process.env.HUN_INTEGRACION_TIMEOUT_MS || '6000', 10),
 
-  // Configuración SOAP Hosvital Directa (DigitalWare WSAsicitcon y WSCancita)
+  // Configuración SOAP Hosvital Directa (DigitalWare WSAsicitcon, WSCancita y WSCrePac)
   HOSVITAL_SOAP_ENABLED: false,
   HOSVITAL_SOAP_BASE_URL: process.env.HOSVITAL_SOAP_BASE_URL || 'http://172.16.1.71:8080/hosvital/servlet',
   HOSVITAL_SOAP_ASICIME_PATH: process.env.HOSVITAL_SOAP_ASICIME_PATH || '/awsasicime',
   HOSVITAL_SOAP_ASICITCON_PATH: process.env.HOSVITAL_SOAP_ASICITCON_PATH || '/awsasicitcon',
   HOSVITAL_SOAP_CANCITA_PATH: process.env.HOSVITAL_SOAP_CANCITA_PATH || '/awscancita',
+  HOSVITAL_SOAP_CREPAC_PATH: process.env.HOSVITAL_SOAP_CREPAC_PATH || '/awscrepac',
   HOSVITAL_EMPRESA: process.env.HOSVITAL_EMPRESA || '1',
   HOSVITAL_SEDE: process.env.HOSVITAL_SEDE || '001',
   HOSVITAL_MAEDIR_USER: process.env.HOSVITAL_MAEDIR_USER || 'agendamiento',

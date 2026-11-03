@@ -45,6 +45,7 @@ export interface FlowStateData {
   patientDoc?: string;
   patientDocumentType?: string;
   patientBirthDate?: string;
+  patientGender?: 'M' | 'F';
   patientPhone?: string;
   patientEmail?: string;
   residenceCity?: string;
