@@ -436,16 +436,18 @@ export class DecisionTreeService {
   public static async lookupAndShowUserCard(cleanDoc: string, data: FlowStateData): Promise<BotReplyResult> {
     const foundContact = await store.findContactByDocument(cleanDoc);
     const activeContact = data.contactId ? store.getContactById(data.contactId) : undefined;
-    const docType = data.patientDocumentType || foundContact?.documentType || activeContact?.documentType || 'Cédula de Ciudadanía';
+    const isSameActiveContact = Boolean(activeContact && activeContact.documentId === cleanDoc);
+    const docType = data.patientDocumentType || (isSameActiveContact ? activeContact?.documentType : undefined) || foundContact?.documentType || 'Cédula de Ciudadanía';
 
     // Consultar también en tiempo real en CAPBAS de Hosvital (WSCrePac en modo DSP)
     const hosvitalPatient = await HunApiService.consultarPacienteHosvital(docType, cleanDoc);
 
+    const isRegisteredHosvital = Boolean(hosvitalPatient?.exists && hosvitalPatient.fullName);
     const isRegisteredLocal = Boolean(
       (foundContact && foundContact.name && foundContact.name.trim().length > 0) ||
-      (activeContact && activeContact.documentId === cleanDoc && activeContact.name && activeContact.name.trim().length > 0)
+      (isSameActiveContact && activeContact?.name && activeContact.name.trim().length > 0)
     );
-    const isRegistered = isRegisteredLocal || Boolean(hosvitalPatient?.exists && hosvitalPatient.fullName);
+    const isRegistered = isRegisteredHosvital || isRegisteredLocal;
 
     if (isRegistered) {
       // Garantizar que el paciente quede creado/asociado en MAEPAC con el contrato escogido (HUN002, HUN25 o HUN323)
@@ -455,34 +457,73 @@ export class DecisionTreeService {
         cleanDoc,
         this.resolveProfileContract(data)
       );
-      const name = foundContact?.name || activeContact?.name || hosvitalPatient?.fullName || 'Paciente';
+
+      // Hosvital es la fuente oficial institucional (CAPBAS). Solo recurrir a local si Hosvital no lo tiene.
+      const name =
+        (isRegisteredHosvital ? hosvitalPatient?.fullName : undefined) ||
+        foundContact?.name ||
+        (isSameActiveContact ? activeContact?.name : undefined) ||
+        'Paciente';
+
       const phone =
+        (isRegisteredHosvital ? (hosvitalPatient?.mobile || hosvitalPatient?.phone) : undefined) ||
         foundContact?.phone ||
-        activeContact?.phone ||
-        hosvitalPatient?.mobile ||
-        hosvitalPatient?.phone ||
+        (isSameActiveContact ? activeContact?.phone : undefined) ||
         data.contactPhone ||
         '';
-      const email = foundContact?.email || activeContact?.email || hosvitalPatient?.email || '';
-      const city = foundContact?.residenceCity || activeContact?.residenceCity || 'Bogotá D.C.';
-      const address = foundContact?.residenceAddress || activeContact?.residenceAddress || hosvitalPatient?.address || '';
-      const localBirthStr = (foundContact?.birthDate || activeContact?.birthDate)?.toLocaleDateString('es-CO', {
-        timeZone: 'America/Bogota',
-      });
-      const birthDateStr = localBirthStr || hosvitalPatient?.birthDateFormatted || data.patientBirthDate;
-      const gender = data.patientGender || hosvitalPatient?.gender;
+
+      const email =
+        (isRegisteredHosvital ? hosvitalPatient?.email : undefined) ||
+        foundContact?.email ||
+        (isSameActiveContact ? activeContact?.email : undefined) ||
+        '';
+
+      const city =
+        foundContact?.residenceCity ||
+        (isSameActiveContact ? activeContact?.residenceCity : undefined) ||
+        'Bogotá D.C.';
+
+      const address =
+        (isRegisteredHosvital ? hosvitalPatient?.address : undefined) ||
+        foundContact?.residenceAddress ||
+        (isSameActiveContact ? activeContact?.residenceAddress : undefined) ||
+        '';
+
+      const localBirthStr =
+        (foundContact?.birthDate || (isSameActiveContact ? activeContact?.birthDate : undefined))?.toLocaleDateString('es-CO', {
+          timeZone: 'America/Bogota',
+        });
+      const birthDateStr =
+        (isRegisteredHosvital ? hosvitalPatient?.birthDateFormatted : undefined) ||
+        localBirthStr ||
+        (isSameActiveContact ? data.patientBirthDate : undefined);
+
+      const gender =
+        (isRegisteredHosvital ? hosvitalPatient?.gender : undefined) ||
+        (isSameActiveContact ? data.patientGender : undefined);
 
       if (data.contactId) {
         await store.updateContactProfile(data.contactId, {
           name,
           documentId: cleanDoc,
           documentType: docType,
-          birthDate: this.toBirthDate(birthDateStr) || foundContact?.birthDate || activeContact?.birthDate,
+          birthDate: this.toBirthDate(birthDateStr) || foundContact?.birthDate || (isSameActiveContact ? activeContact?.birthDate : undefined),
           email: email || undefined,
           residenceCity: city,
           residenceAddress: address || undefined,
         });
       }
+
+      await store.createOrUpdatePatientContact({
+        documentId: cleanDoc,
+        documentType: docType,
+        name,
+        phone,
+        email: email || undefined,
+        residenceCity: city,
+        residenceAddress: address || undefined,
+        birthDate: this.toBirthDate(birthDateStr),
+      });
 
       const ficha = this.formatUserFicha({
         name,
@@ -776,28 +817,37 @@ export class DecisionTreeService {
         };
       }
 
-      if (!data.patientFound) {
-        const hosvitalPatient = await HunApiService.consultarPacienteHosvital(data.patientDocumentType || 'CC', cleanDoc);
-        if (hosvitalPatient?.exists && hosvitalPatient.fullName) {
-          data.patientFound = true;
-          data.patientName = hosvitalPatient.fullName;
-          data.patientBirthDate = hosvitalPatient.birthDateFormatted || data.patientBirthDate;
-          data.patientGender = hosvitalPatient.gender || data.patientGender;
-          data.patientPhone = hosvitalPatient.mobile || hosvitalPatient.phone || data.patientPhone;
-          data.patientEmail = hosvitalPatient.email || data.patientEmail;
-          data.residenceAddress = hosvitalPatient.address || data.residenceAddress;
-        }
-      }
+      // Consultar siempre Hosvital y store local para este documento específico
+      const hosvitalPatient = await HunApiService.consultarPacienteHosvital(data.patientDocumentType || 'CC', cleanDoc);
+      const foundContact = await store.findContactByDocument(cleanDoc);
 
-      if (data.patientFound) {
+      const patientFound = Boolean((hosvitalPatient?.exists && hosvitalPatient.fullName) || (foundContact && foundContact.name));
+      const patientName = (hosvitalPatient?.exists && hosvitalPatient.fullName ? hosvitalPatient.fullName : undefined) || foundContact?.name;
+      const patientBirthDate = (hosvitalPatient?.exists ? hosvitalPatient.birthDateFormatted : undefined) || (foundContact?.birthDate ? foundContact.birthDate.toLocaleDateString('es-CO', { timeZone: 'America/Bogota' }) : undefined);
+      const patientGender = hosvitalPatient?.gender || data.patientGender;
+      const patientPhone = (hosvitalPatient?.mobile || hosvitalPatient?.phone) || foundContact?.phone;
+      const patientEmail = hosvitalPatient?.email || foundContact?.email;
+      const residenceAddress = hosvitalPatient?.address || foundContact?.residenceAddress;
+
+      if (patientFound) {
         return {
           replyMessages: [
-            `¡Hola ${data.patientName || 'paciente'}! Encontramos tus datos en nuestra base institucional del HUN.`,
+            `¡Hola ${patientName || 'paciente'}! Encontramos tus datos en nuestra base institucional del HUN.`,
             '¿La cita médica es para ti o para alguien más?\n\n1️⃣ Sí, es para mí\n2️⃣ No, es para alguien más',
           ],
           nextFlow: 'PATIENT_REGISTRATION',
           nextStep: 'REQUEST_FOR_SELF',
-          updatedData: { ...data, patientDoc: cleanDoc },
+          updatedData: {
+            ...data,
+            patientFound: true,
+            patientDoc: cleanDoc,
+            patientName,
+            patientBirthDate,
+            patientGender,
+            patientPhone,
+            patientEmail,
+            residenceAddress,
+          },
         };
       }
 
@@ -1321,6 +1371,28 @@ export class DecisionTreeService {
         });
       }
 
+      const cleanFlowData: FlowStateData = { ...data };
+      delete cleanFlowData.patientDoc;
+      delete cleanFlowData.patientName;
+      delete cleanFlowData.patientBirthDate;
+      delete cleanFlowData.patientGender;
+      delete cleanFlowData.patientPhone;
+      delete cleanFlowData.patientEmail;
+      delete cleanFlowData.residenceCity;
+      delete cleanFlowData.residenceAddress;
+      delete cleanFlowData.patientFound;
+      delete cleanFlowData.requestForSelf;
+      delete cleanFlowData.selectedSlot;
+      delete cleanFlowData.selectedSpecialty;
+      delete cleanFlowData.selectedCups;
+      delete cleanFlowData.selectedCupsName;
+      delete cleanFlowData.doctor;
+      delete cleanFlowData.doctorCode;
+      delete cleanFlowData.date;
+      delete cleanFlowData.time;
+      delete cleanFlowData.appointmentNumber;
+      delete cleanFlowData.isConfirmed;
+
       return this.sanitizeResult({
         replyMessages: [
           profileNote,
@@ -1342,7 +1414,7 @@ export class DecisionTreeService {
         nextFlow: 'IDLE',
         nextStep: 'AUTH_DOC_TYPE',
         updatedData: {
-          ...data,
+          ...cleanFlowData,
           userType,
           userTypeCode,
           userTypeName,
@@ -1359,8 +1431,17 @@ export class DecisionTreeService {
       // Si el usuario escribe directamente su número de documento (5+ dígitos numéricos)
       if (cleanDigits.length >= 5 && !['1', '2', '3', '4', '5', '6'].includes(text.trim())) {
         const defaultDocType = data.patientDocumentType || 'Cédula de Ciudadanía';
-        data.patientDocumentType = defaultDocType;
-        return this.lookupAndShowUserCard(cleanDigits, data);
+        const cleanFlowData: FlowStateData = { ...data, patientDocumentType: defaultDocType };
+        delete cleanFlowData.patientDoc;
+        delete cleanFlowData.patientName;
+        delete cleanFlowData.patientBirthDate;
+        delete cleanFlowData.patientGender;
+        delete cleanFlowData.patientPhone;
+        delete cleanFlowData.patientEmail;
+        delete cleanFlowData.residenceCity;
+        delete cleanFlowData.residenceAddress;
+        delete cleanFlowData.patientFound;
+        return this.lookupAndShowUserCard(cleanDigits, cleanFlowData);
       }
 
       const docTypes: Record<string, string> = {
@@ -1413,6 +1494,17 @@ export class DecisionTreeService {
         });
       }
 
+      const cleanFlowData: FlowStateData = { ...data };
+      delete cleanFlowData.patientDoc;
+      delete cleanFlowData.patientName;
+      delete cleanFlowData.patientBirthDate;
+      delete cleanFlowData.patientGender;
+      delete cleanFlowData.patientPhone;
+      delete cleanFlowData.patientEmail;
+      delete cleanFlowData.residenceCity;
+      delete cleanFlowData.residenceAddress;
+      delete cleanFlowData.patientFound;
+
       return this.sanitizeResult({
         replyMessages: [
           `Has seleccionado: *${selectedType}*.\n\nPor favor digita tu número de documento de identidad (sin puntos, comas ni espacios. Ejemplo: 1020304050):`,
@@ -1420,7 +1512,7 @@ export class DecisionTreeService {
         nextFlow: 'IDLE',
         nextStep: 'AUTH_DOC_NUMBER',
         updatedData: {
-          ...data,
+          ...cleanFlowData,
           patientDocumentType: selectedType,
           fallbackCount: 0,
         },
@@ -1441,7 +1533,17 @@ export class DecisionTreeService {
         });
       }
 
-      return this.lookupAndShowUserCard(cleanDoc, data);
+      const cleanFlowData: FlowStateData = { ...data };
+      delete cleanFlowData.patientDoc;
+      delete cleanFlowData.patientName;
+      delete cleanFlowData.patientBirthDate;
+      delete cleanFlowData.patientGender;
+      delete cleanFlowData.patientPhone;
+      delete cleanFlowData.patientEmail;
+      delete cleanFlowData.residenceCity;
+      delete cleanFlowData.residenceAddress;
+      delete cleanFlowData.patientFound;
+      return this.lookupAndShowUserCard(cleanDoc, cleanFlowData);
     }
 
     // Paso 3B: Si es un paciente nuevo no registrado previamente
@@ -2183,21 +2285,20 @@ export class DecisionTreeService {
       const existsHosvital = Boolean(hosvitalPatient?.exists && hosvitalPatient.fullName);
 
       if (existsLocal || existsHosvital) {
-        const patientName = foundPatient?.name || hosvitalPatient?.fullName || 'Paciente';
+        const patientName = (existsHosvital ? hosvitalPatient?.fullName : undefined) || foundPatient?.name || 'Paciente';
         const phone =
+          (existsHosvital ? (hosvitalPatient?.mobile || hosvitalPatient?.phone) : undefined) ||
           foundPatient?.phone ||
-          hosvitalPatient?.mobile ||
-          hosvitalPatient?.phone ||
           data.applicantPhone ||
           data.contactPhone ||
           '';
-        const email = foundPatient?.email || hosvitalPatient?.email || '';
+        const email = (existsHosvital ? hosvitalPatient?.email : undefined) || foundPatient?.email || '';
         const city = foundPatient?.residenceCity || 'Bogotá D.C.';
-        const address = foundPatient?.residenceAddress || hosvitalPatient?.address || '';
+        const address = (existsHosvital ? hosvitalPatient?.address : undefined) || foundPatient?.residenceAddress || '';
         const birthDateStr =
-          foundPatient?.birthDate?.toLocaleDateString('es-CO', { timeZone: 'America/Bogota' }) ||
-          hosvitalPatient?.birthDateFormatted;
-        const gender = hosvitalPatient?.gender;
+          (existsHosvital ? hosvitalPatient?.birthDateFormatted : undefined) ||
+          foundPatient?.birthDate?.toLocaleDateString('es-CO', { timeZone: 'America/Bogota' });
+        const gender = (existsHosvital ? hosvitalPatient?.gender : undefined) || undefined;
 
         await store.createOrUpdatePatientContact({
           documentId: cleanDoc,

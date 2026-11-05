@@ -252,11 +252,23 @@ export class WebhookController {
         ? { patientFound: false, lookupDocument: cleanDocLookup }
         : {}),
     };
-    if (!registrationData.patientDoc && contact.documentId) {
-      registrationData.patientDoc = contact.documentId;
-    }
-    if (!registrationData.patientDocumentType && contact.documentType) {
-      registrationData.patientDocumentType = contact.documentType;
+    const isAuthStep = [
+      'SELECT_USER_TYPE',
+      'AUTH_DOC_TYPE',
+      'AUTH_DOC_NUMBER',
+      'LOOKUP_DOCUMENT',
+      'REGISTER_NEW_NAME',
+      'PATIENT_OTHER_DOC_TYPE',
+      'PATIENT_OTHER_DOC_NUMBER',
+    ].includes(conversation.currentStep);
+
+    if (!isAuthStep) {
+      if (!registrationData.patientDoc && contact.documentId) {
+        registrationData.patientDoc = contact.documentId;
+      }
+      if (!registrationData.patientDocumentType && contact.documentType) {
+        registrationData.patientDocumentType = contact.documentType;
+      }
     }
     const botResult = await DecisionTreeService.processMessage(
       text,
