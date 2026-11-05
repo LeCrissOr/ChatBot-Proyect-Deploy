@@ -269,6 +269,18 @@ export class WebhookController {
       if (!registrationData.patientDocumentType && contact.documentType) {
         registrationData.patientDocumentType = contact.documentType;
       }
+      if (!registrationData.patientName && contact.name) {
+        registrationData.patientName = contact.name;
+      }
+      if (!registrationData.userType && contact.userTypeCode) {
+        registrationData.userType = contact.userTypeCode;
+        registrationData.userTypeCode = contact.userTypeCode;
+        registrationData.userTypeName = contact.userTypeName;
+        registrationData.epsCode = contact.userTypeCode === 'EGRESADO_UNAL'
+          ? (CONFIG.HUN_CONTRATO_EGRESADOS || 'HUN323')
+          : (CONFIG.HUN_CONTRATO_PARTICULAR || 'HUN002');
+        registrationData.contractCode = registrationData.epsCode;
+      }
     }
     const botResult = await DecisionTreeService.processMessage(
       text,

@@ -115,7 +115,7 @@ export class DecisionTreeService {
     // (A menos que el usuario escriba comandos para reiniciar)
     if (currentFlow === 'F04_AUXILIAR' && currentStep === 'ASSIGNED') {
       if (lower === 'menu' || lower === 'inicio' || lower === 'reiniciar' || lower === 'bot') {
-        return this.getRootMenu();
+        return this.getRootMenu(patientSavedName || data.patientName, undefined, data);
       }
       return this.sanitizeResult({
         replyMessages: [
@@ -135,7 +135,7 @@ export class DecisionTreeService {
 
     // Comandos universales de navegación (en CANCELAR_CITA la palabra "cancelar" forma parte de la confirmación)
     if (lower === 'menu' || lower === 'inicio' || (lower === 'cancelar' && currentFlow !== 'CANCELAR_CITA')) {
-      return this.getRootMenu();
+      return this.getRootMenu(patientSavedName || data.patientName, undefined, data);
     }
 
     // Rutas de flujos
@@ -186,7 +186,7 @@ export class DecisionTreeService {
         break;
 
       default:
-        result = this.getRootMenu(patientSavedName);
+        result = this.getRootMenu(patientSavedName || data.patientName, undefined, data);
         break;
     }
 
@@ -231,8 +231,62 @@ export class DecisionTreeService {
     });
   }
 
-  public static getRootMenu(_patientName?: string, userTypeMessage?: string): BotReplyResult {
-    const greeting = _patientName ? `¡Hola ${_patientName}!\n\n` : '';
+  /**
+   * Limpia datos temporales de agendamiento/trámites y preserva la ficha y perfil del usuario al volver al menú principal
+   */
+  public static cleanDataForRootMenu(data?: FlowStateData): FlowStateData {
+    if (!data) return { fallbackCount: 0 };
+    const defaultContract = CONFIG.HUN_CONTRATO_PARTICULAR || 'HUN002';
+    const effectiveUserType = data.userType || data.userTypeCode || 'PARTICULAR';
+    return {
+      userType: effectiveUserType,
+      userTypeCode: data.userTypeCode || effectiveUserType,
+      userTypeName:
+        data.userTypeName ||
+        (effectiveUserType === 'EGRESADO_UNAL'
+          ? 'Egresado Universidad Nacional de Colombia'
+          : effectiveUserType === 'COLABORADOR_HUN'
+          ? 'Colaborador HUN'
+          : 'Paciente Particular'),
+      epsCode:
+        data.epsCode ||
+        (effectiveUserType === 'EGRESADO_UNAL'
+          ? CONFIG.HUN_CONTRATO_EGRESADOS || 'HUN323'
+          : defaultContract),
+      contractCode:
+        data.contractCode ||
+        data.epsCode ||
+        (effectiveUserType === 'EGRESADO_UNAL'
+          ? CONFIG.HUN_CONTRATO_EGRESADOS || 'HUN323'
+          : defaultContract),
+      patientDoc: data.patientDoc,
+      patientDocumentType: data.patientDocumentType,
+      patientName: data.patientName,
+      patientBirthDate: data.patientBirthDate,
+      patientGender: data.patientGender,
+      patientPhone: data.patientPhone,
+      patientEmail: data.patientEmail,
+      residenceCity: data.residenceCity,
+      residenceAddress: data.residenceAddress,
+      patientFound: data.patientFound,
+      patientCreated: data.patientCreated,
+      contactId: data.contactId,
+      contactPhone: data.contactPhone,
+      confirmedAppointments: data.confirmedAppointments,
+      applicantName: data.applicantName,
+      applicantDoc: data.applicantDoc,
+      applicantDocType: data.applicantDocType,
+      applicantPhone: data.applicantPhone,
+      applicantEmail: data.applicantEmail,
+      applicantCity: data.applicantCity,
+      applicantAddress: data.applicantAddress,
+      fallbackCount: 0,
+    };
+  }
+
+  public static getRootMenu(_patientName?: string, userTypeMessage?: string, data?: FlowStateData): BotReplyResult {
+    const effectiveName = _patientName || data?.patientName || data?.applicantName;
+    const greeting = effectiveName ? `¡Hola ${effectiveName}!\n\n` : '';
     const note = userTypeMessage ? `${userTypeMessage}\n\n` : '';
     return this.sanitizeResult({
       replyMessages: [
@@ -252,7 +306,7 @@ export class DecisionTreeService {
       },
       nextFlow: 'IDLE',
       nextStep: 'ROOT_MENU',
-      updatedData: { fallbackCount: 0 },
+      updatedData: this.cleanDataForRootMenu(data),
     });
   }
 
@@ -989,7 +1043,7 @@ export class DecisionTreeService {
 
     if (step === 'CANCEL_OPTIONS') {
       return lower === '1'
-        ? this.getRootMenu()
+        ? this.getRootMenu(data.patientName, undefined, data)
         : {
             replyMessages: [
               'Por favor califica tu experiencia seleccionando un número del 1 al 5 ⭐:\n\n1️⃣ Muy insatisfecho\n2️⃣ Insatisfecho\n3️⃣ Regular\n4️⃣ Bueno\n5️⃣ Excelente',
@@ -3108,7 +3162,15 @@ export class DecisionTreeService {
 
     // Si no ha seleccionado tipo de usuario previamente, forzamos la pregunta
     if (!data.userType && step !== 'SELECT_USER_TYPE') {
-      return this.getWelcomeFlow();
+      if (data.patientDoc || data.patientName || patientName || step === 'ROOT_MENU') {
+        data.userType = 'PARTICULAR';
+        data.userTypeCode = 'PARTICULAR';
+        data.userTypeName = 'Paciente Particular';
+        data.epsCode = CONFIG.HUN_CONTRATO_PARTICULAR || 'HUN002';
+        data.contractCode = data.epsCode;
+      } else {
+        return this.getWelcomeFlow();
+      }
     }
 
     // Si el paciente se encuentra en el panel de opciones de agendamiento y cotización
@@ -3206,7 +3268,7 @@ export class DecisionTreeService {
         lower.includes('inicio') ||
         lower.includes('regresar')
       ) {
-        return this.getRootMenu(patientName);
+        return this.getRootMenu(patientName || data.patientName, undefined, data);
       }
 
       return {
@@ -3392,7 +3454,7 @@ export class DecisionTreeService {
         lower.includes('menú') ||
         lower.includes('inicio')
       ) {
-        return this.getRootMenu(patientName);
+        return this.getRootMenu(patientName || data.patientName, undefined, data);
       }
 
       return {
@@ -3822,7 +3884,7 @@ export class DecisionTreeService {
             updatedData: { ...data, fallbackCount: 0 },
           };
         }
-        return this.getRootMenu(patientSavedName);
+        return this.getRootMenu(patientSavedName || data.patientName, undefined, data);
       }
 
       case 'SELECT_APPOINTMENT': {
@@ -4136,7 +4198,7 @@ export class DecisionTreeService {
       }
 
       default:
-        return this.getRootMenu(patientSavedName);
+        return this.getRootMenu(patientSavedName || data.patientName, undefined, data);
     }
   }
 
@@ -4153,7 +4215,7 @@ export class DecisionTreeService {
     switch (step) {
       case 'NO_APPOINTMENTS': {
         if (lower === '1' || lower.includes('menu') || lower.includes('inicio') || lower.includes('si')) {
-          return this.getRootMenu(patientSavedName);
+          return this.getRootMenu(patientSavedName || data.patientName, undefined, data);
         }
         return {
           replyMessages: [
@@ -4406,7 +4468,7 @@ export class DecisionTreeService {
       }
 
       default:
-        return this.getRootMenu(patientSavedName);
+        return this.getRootMenu(patientSavedName || data.patientName, undefined, data);
     }
   }
 
@@ -4431,7 +4493,7 @@ export class DecisionTreeService {
       lower.includes('inicio') ||
       lower.includes('ir')
     ) {
-      return this.getRootMenu(patientName);
+      return this.getRootMenu(patientName, undefined, data);
     }
 
     // Opción 2: Terminar conversación (Envío de Encuesta NPS)
@@ -4938,7 +5000,7 @@ export class DecisionTreeService {
             updatedData: data,
           };
         }
-        return this.getRootMenu();
+        return this.getRootMenu(patientSavedName || data.patientName, undefined, data);
       }
 
       case 'F01_VISIT_TYPE': {
@@ -5515,7 +5577,7 @@ export class DecisionTreeService {
       }
 
       default:
-        return this.getRootMenu();
+        return this.getRootMenu(patientSavedName || data.patientName, undefined, data);
     }
   }
 
@@ -5628,7 +5690,7 @@ export class DecisionTreeService {
       }
 
       default:
-        return this.getRootMenu();
+        return this.getRootMenu(data.patientName, undefined, data);
     }
   }
 
@@ -5893,7 +5955,7 @@ export class DecisionTreeService {
       }
 
       default:
-        return this.getRootMenu();
+        return this.getRootMenu(patientSavedName || data.patientName, undefined, data);
     }
   }
 
@@ -6088,7 +6150,7 @@ export class DecisionTreeService {
 
     // Comandos universales de navegación
     if (lower === 'menu' || lower === 'inicio' || lower === 'salir' || lower === 'cancelar') {
-      return this.getRootMenu(patientName);
+      return this.getRootMenu(patientName || data.patientName, undefined, data);
     }
 
     // Paso de confirmación del procedimiento consultado (Especialmente Laboratorios)
@@ -6162,7 +6224,7 @@ export class DecisionTreeService {
       }
 
       if (lower === 'menu' || lower === 'inicio' || lower === 'salir') {
-        return this.getRootMenu(patientName);
+        return this.getRootMenu(patientName || data.patientName, undefined, data);
       }
 
       // Si el paciente escribe directamente otro término de búsqueda
@@ -6446,7 +6508,7 @@ export class DecisionTreeService {
       }
 
       if (cleanNum === '2' || lower.includes('menu') || lower.includes('inicio') || lower.includes('terminar')) {
-        return this.getRootMenu(patientName);
+        return this.getRootMenu(patientName || data.patientName, undefined, data);
       }
 
       // Si el paciente escribe directamente otro nombre de examen aquí:
@@ -6465,7 +6527,7 @@ export class DecisionTreeService {
       };
     }
 
-    return this.getRootMenu(patientName);
+    return this.getRootMenu(patientName || data.patientName, undefined, data);
   }
 
   private static isEnglish(text: string): boolean {
@@ -6761,8 +6823,11 @@ export class DecisionTreeService {
           '¿Deseas corregir algún otro dato del paciente?\n\n1️⃣ Sí\n2️⃣ No',
         ];
 
+      case 'ROOT_MENU':
+        return this.getRootMenu(patientName || data.patientName, undefined, data).replyMessages;
+
       default:
-        return this.getRootMenu(patientName).replyMessages;
+        return this.getRootMenu(patientName || data.patientName, undefined, data).replyMessages;
     }
   }
 }
