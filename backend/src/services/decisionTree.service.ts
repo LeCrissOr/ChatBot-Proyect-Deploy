@@ -1608,27 +1608,18 @@ export class DecisionTreeService {
             modo: 'INS',
           });
         }
-        const greetingName = data.patientName || 'Paciente';
-        return this.sanitizeResult({
-          replyMessages: [
-            `${greetingName}, ¿la cita médica es para ti o es para alguien más?\n\n1️⃣ Sí, es para mí\n2️⃣ No, es para alguien más\n\n(Puedes pulsar el botón o responder con el número de tu opción)`,
-          ],
-          interactivePayload: {
-            type: 'button',
-            title: '¿Para quién es la cita?',
-            options: [
-              { id: '1', title: '1. Sí, es para mí' },
-              { id: '2', title: '2. No, es para alguien más' },
-            ],
-          },
-          nextFlow: 'IDLE',
-          nextStep: 'REQUEST_FOR_SELF',
+        const root = this.getRootMenu(
+          data.patientName,
+          '¡Perfecto! Continuemos con tu solicitud.'
+        );
+        return {
+          ...root,
           updatedData: {
             ...data,
             patientFound: true,
             fallbackCount: 0,
           },
-        });
+        };
       }
 
       if (
@@ -2049,28 +2040,18 @@ export class DecisionTreeService {
           });
         }
 
-        const greetingName = data.patientName || 'Paciente';
-        return this.sanitizeResult({
-          replyMessages: [
-            `Tus datos han sido actualizados correctamente.\n\n${ficha}`,
-            `${greetingName}, ¿la cita médica es para ti o es para alguien más?\n\n1️⃣ Sí, es para mí\n2️⃣ No, es para alguien más\n\n(Puedes pulsar el botón o responder con el número de tu opción)`,
-          ],
-          interactivePayload: {
-            type: 'button',
-            title: '¿Para quién es la cita?',
-            options: [
-              { id: '1', title: '1. Sí, es para mí' },
-              { id: '2', title: '2. No, es para alguien más' },
-            ],
-          },
-          nextFlow: 'IDLE',
-          nextStep: 'REQUEST_FOR_SELF',
+        const root = this.getRootMenu(
+          data.patientName,
+          `✅ Tus datos han sido actualizados correctamente.\n\n${ficha}\n\n¡Perfecto! Continuemos con tu solicitud.`
+        );
+        return {
+          ...root,
           updatedData: {
             ...data,
             patientFound: true,
             fallbackCount: 0,
           },
-        });
+        };
       }
 
       return this.sanitizeResult({
@@ -2122,18 +2103,11 @@ export class DecisionTreeService {
           });
         }
 
-        const root = this.getRootMenu(
-          data.patientName,
-          '¡Perfecto! Continuemos con tu solicitud.'
-        );
-        return {
-          ...root,
-          updatedData: {
-            ...data,
-            requestForSelf: true,
-            fallbackCount: 0,
-          },
-        };
+        return this.getCitaMedicaMenu({
+          ...data,
+          requestForSelf: true,
+          fallbackCount: 0,
+        });
       }
 
       if (
@@ -3256,6 +3230,26 @@ export class DecisionTreeService {
         lower.includes('consulta')
       ) {
         if (data.patientDoc) {
+          if (data.requestForSelf === undefined) {
+            const greetingName = data.patientName || patientName || 'Paciente';
+            return this.sanitizeResult({
+              replyMessages: [
+                `${greetingName}, ¿la cita médica es para ti o es para alguien más?\n\n1️⃣ Sí, es para mí\n2️⃣ No, es para alguien más\n\n(Puedes pulsar el botón o responder con el número de tu opción)`,
+              ],
+              interactivePayload: {
+                type: 'button',
+                title: '¿Para quién es la cita?',
+                options: [
+                  { id: '1', title: '1. Sí, es para mí' },
+                  { id: '2', title: '2. No, es para alguien más' },
+                ],
+              },
+              nextFlow: 'IDLE',
+              nextStep: 'REQUEST_FOR_SELF',
+              updatedData: { ...data, fallbackCount: 0 },
+            });
+          }
+
           const targetPatient = data.patientName || patientName || '';
           const note = targetPatient
             ? `Continuemos con el agendamiento para *${targetPatient}* (Doc: ${data.patientDoc}).`
@@ -3411,7 +3405,7 @@ export class DecisionTreeService {
       };
     }
 
-    // 1. Cita Médica -> Despliega el submenú de Cita Médica
+    // 1. Cita Médica -> Pregunta si la cita es para el usuario registrado o para alguien más
     if (
       cleanNum === '1' ||
       lower === '1' ||
@@ -3421,7 +3415,26 @@ export class DecisionTreeService {
       lower.includes('medica') ||
       lower.includes('médica')
     ) {
-      return this.getCitaMedicaMenu(data);
+      const greetingName = data.patientName || patientName || 'Paciente';
+      return this.sanitizeResult({
+        replyMessages: [
+          `${greetingName}, ¿la cita médica es para ti o es para alguien más?\n\n1️⃣ Sí, es para mí\n2️⃣ No, es para alguien más\n\n(Puedes pulsar el botón o responder con el número de tu opción)`,
+        ],
+        interactivePayload: {
+          type: 'button',
+          title: '¿Para quién es la cita?',
+          options: [
+            { id: '1', title: '1. Sí, es para mí' },
+            { id: '2', title: '2. No, es para alguien más' },
+          ],
+        },
+        nextFlow: 'IDLE',
+        nextStep: 'REQUEST_FOR_SELF',
+        updatedData: {
+          ...data,
+          fallbackCount: 0,
+        },
+      });
     }
 
     // 2. Laboratorios -> Lleva a consulta directa de exámenes de laboratorio
