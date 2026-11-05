@@ -404,6 +404,12 @@ export class HunApiService {
       contrasena: CONFIG.HOSVITAL_MAEDIR_PASSWORD || '4g3ndHU**N',
     };
 
+    // Garantizar que el paciente tenga activo en MAEPAC el contrato seleccionado (HUN002, HUN25 o HUN323)
+    const targetContract = String(cleanPayload.eps || CONFIG.HUN_CONTRATO_PARTICULAR || 'HUN002').trim();
+    if (cleanDoc && targetContract) {
+      await this.crearOActualizarContratoPacienteHosvital(cleanTipo, cleanDoc, targetContract);
+    }
+
     // Asignación exclusivamente mediante la API REST de agendamiento.
     console.log(`\n======================================================`);
     console.log(`📡 [HunApi] PUBLICANDO ASIGNACIÓN DE CITA EN HOSVITAL`);
@@ -1014,6 +1020,7 @@ export class HunApiService {
     telefono?: string;
     celular?: string;
     email?: string;
+    contrato?: string;
     modo?: 'INS' | 'UPD';
   }): Promise<{
     success: boolean;
@@ -1175,6 +1182,12 @@ export class HunApiService {
         console.warn(`⚠️ [HunApi:WSCrePac] Novedad en CAPBAS Hosvital (Código ${codRespuesta}): ${respuesta}`);
       }
 
+      // Asociar/crear automáticamente el contrato del paciente en MAEPAC (HUN002, HUN25 o HUN323)
+      const targetContract = (input.contrato || CONFIG.HUN_CONTRATO_PARTICULAR || 'HUN002').trim();
+      if (targetContract) {
+        await this.crearOActualizarContratoPacienteHosvital(cleanTipo, cleanDoc, targetContract);
+      }
+
       return {
         success: isSuccess,
         codRespuesta,
@@ -1188,6 +1201,107 @@ export class HunApiService {
         codRespuesta: 999,
         respuesta: error.message || 'Error de conexión con WSCrePac en Hosvital',
         action: 'ERROR',
+      };
+    }
+  }
+
+  /**
+   * 12. Crea o activa un contrato para el paciente en la tabla MAEPAC de Hosvital mediante WSMAEPAC.MAEPAC (Modo = 'INS')
+   * Permite asociar HUN002 (Particular), HUN25 (Empleados) o HUN323 (Egresados) aunque el paciente sea nuevo o ya tenga otro contrato.
+   */
+  public static async crearOActualizarContratoPacienteHosvital(
+    tipoDocumento: string,
+    documento: string,
+    contrato: string
+  ): Promise<{ success: boolean; codigo: number; respuesta: string }> {
+    if (!CONFIG.HOSVITAL_ENABLED) {
+      return { success: false, codigo: 999, respuesta: 'Integración Hosvital deshabilitada.' };
+    }
+
+    const cleanTipo = this.normalizeCapbasDocType(tipoDocumento);
+    const cleanDoc = String(documento || '').replace(/[^0-9a-zA-Z]/g, '').trim();
+    const cleanContrato = String(contrato || CONFIG.HUN_CONTRATO_PARTICULAR || 'HUN002').trim().toUpperCase();
+    if (!cleanDoc || !cleanContrato) {
+      return { success: false, codigo: 1, respuesta: 'Documento o contrato vacío.' };
+    }
+
+    const empresa = CONFIG.HOSVITAL_EMPRESA || '1';
+    const sede = CONFIG.HOSVITAL_SEDE || '001';
+    const usuario = CONFIG.HOSVITAL_MAEPAC_USER || 'apaHUNhos';
+    const contrasena = CONFIG.HOSVITAL_MAEPAC_PASSWORD || '@p@H4Nh0s';
+    const todayIso = new Date().toISOString().split('T')[0];
+
+    const soapUrl = `${CONFIG.HOSVITAL_SOAP_BASE_URL}${CONFIG.HOSVITAL_SOAP_MAEPAC_PATH || '/awsmaepac'}`;
+    const xmlPayload = `<?xml version="1.0" encoding="utf-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:hos="Hosvital">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <hos:WSMAEPAC.MAEPAC>
+      <hos:To_maepac>
+        <hos:TO_MAEPAC.TO_MAEPACIt>
+          <hos:MPCedu>${this.escapeXml(cleanDoc)}</hos:MPCedu>
+          <hos:MPTDOC>${this.escapeXml(cleanTipo)}</hos:MPTDOC>
+          <hos:MENNIT>${this.escapeXml(cleanContrato)}</hos:MENNIT>
+          <hos:MENOMB></hos:MENOMB>
+          <hos:MTUCod>4</hos:MTUCod>
+          <hos:MTUDes></hos:MTUDes>
+          <hos:MTCodP>1</hos:MTCodP>
+          <hos:MTNomP></hos:MTNomP>
+          <hos:MPNoCa></hos:MPNoCa>
+          <hos:MPACMO>0</hos:MPACMO>
+          <hos:MPCUOM>${todayIso}</hos:MPCUOM>
+          <hos:MPstatus>A</hos:MPstatus>
+          <hos:MEestado>0</hos:MEestado>
+          <hos:MPOrd>1</hos:MPOrd>
+          <hos:UltCtvPrx>0</hos:UltCtvPrx>
+          <hos:MPResExe>N</hos:MPResExe>
+          <hos:MECFcha>${todayIso}</hos:MECFcha>
+          <hos:EMPCOD>${this.escapeXml(empresa)}</hos:EMPCOD>
+          <hos:MCDPTO>${this.escapeXml(sede)}</hos:MCDPTO>
+        </hos:TO_MAEPAC.TO_MAEPACIt>
+      </hos:To_maepac>
+      <hos:To_creaut>
+        <hos:EMPCOD>${this.escapeXml(empresa)}</hos:EMPCOD>
+        <hos:MCDPTO>${this.escapeXml(sede)}</hos:MCDPTO>
+        <hos:USUARIO>${this.escapeXml(usuario)}</hos:USUARIO>
+        <hos:CONTRASENA>${this.escapeXml(contrasena)}</hos:CONTRASENA>
+      </hos:To_creaut>
+      <hos:Modo>INS</hos:Modo>
+    </hos:WSMAEPAC.MAEPAC>
+  </soapenv:Body>
+</soapenv:Envelope>`;
+
+    try {
+      const response = await axios.post(soapUrl, xmlPayload, {
+        headers: {
+          'Content-Type': 'text/xml; charset=utf-8',
+          SOAPAction: 'Hosvitalaction/AWSMAEPAC.MAEPAC',
+        },
+        timeout: 8000,
+      });
+
+      const rawXml = String(response.data || '');
+      const codigo = parseInt(this.extractSoapTag(rawXml, 'CODIGO') || '0', 10);
+      const respuesta = this.extractSoapTag(rawXml, 'RESPUESTA');
+      const isOk = codigo === 0;
+
+      if (isOk) {
+        console.log(`✅ [HunApi:WSMAEPAC] Contrato ${cleanContrato} registrado/activo en MAEPAC para ${cleanTipo} ${cleanDoc} (${respuesta || 'Proceso Exitoso'})`);
+      } else {
+        console.warn(`⚠️ [HunApi:WSMAEPAC] Respuesta código ${codigo} al registrar contrato ${cleanContrato} para ${cleanTipo} ${cleanDoc}: ${respuesta}`);
+      }
+
+      return {
+        success: isOk,
+        codigo,
+        respuesta,
+      };
+    } catch (error: any) {
+      console.error(`❌ [HunApi:WSMAEPAC] Error HTTP asociando contrato ${cleanContrato} a ${cleanTipo} ${cleanDoc}:`, error.message);
+      return {
+        success: false,
+        codigo: 999,
+        respuesta: error.message || 'Error de conexión con WSMAEPAC',
       };
     }
   }

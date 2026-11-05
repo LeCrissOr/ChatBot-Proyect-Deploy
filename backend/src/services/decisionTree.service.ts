@@ -412,6 +412,25 @@ export class DecisionTreeService {
   }
 
   /**
+   * Resuelve el contrato de Hosvital según el tipo de usuario seleccionado:
+   * - Particular -> HUN002
+   * - Colaborador HUN (Empleados) -> HUN25
+   * - Egresado UNAL -> HUN323
+   */
+  public static resolveProfileContract(data: FlowStateData): string {
+    if (data.userTypeCode === 'COLABORADOR_HUN' || data.userType === 'COLABORADOR_HUN') {
+      return CONFIG.HUN_CONTRATO_EMPLEADOS || 'HUN25';
+    }
+    if (data.userTypeCode === 'EGRESADO_UNAL' || data.userType === 'EGRESADO_UNAL') {
+      return CONFIG.HUN_CONTRATO_EGRESADOS || 'HUN323';
+    }
+    if (data.epsCode && ['HUN002', 'HUN25', 'HUN323'].includes(data.epsCode.trim().toUpperCase())) {
+      return data.epsCode.trim().toUpperCase();
+    }
+    return CONFIG.HUN_CONTRATO_PARTICULAR || CONFIG.HUN_DEFAULT_EPS || 'HUN002';
+  }
+
+  /**
    * Busca en la base de datos local y en CAPBAS de Hosvital (WSCrePac DSP) por documento y genera la ficha o solicitud de nombre
    */
   public static async lookupAndShowUserCard(cleanDoc: string, data: FlowStateData): Promise<BotReplyResult> {
@@ -429,6 +448,13 @@ export class DecisionTreeService {
     const isRegistered = isRegisteredLocal || Boolean(hosvitalPatient?.exists && hosvitalPatient.fullName);
 
     if (isRegistered) {
+      // Garantizar que el paciente quede creado/asociado en MAEPAC con el contrato escogido (HUN002, HUN25 o HUN323)
+      // aunque ya esté parametrizado en otro contrato dentro de Hosvital.
+      await HunApiService.crearOActualizarContratoPacienteHosvital(
+        docType,
+        cleanDoc,
+        this.resolveProfileContract(data)
+      );
       const name = foundContact?.name || activeContact?.name || hosvitalPatient?.fullName || 'Paciente';
       const phone =
         foundContact?.phone ||
@@ -1476,6 +1502,7 @@ export class DecisionTreeService {
             telefono: data.patientPhone || data.contactPhone,
             celular: data.patientPhone || data.contactPhone,
             email: data.patientEmail,
+            contrato: this.resolveProfileContract(data),
             modo: 'INS',
           });
         }
@@ -1915,6 +1942,7 @@ export class DecisionTreeService {
             telefono: data.patientPhone || data.contactPhone,
             celular: data.patientPhone || data.contactPhone,
             email: data.patientEmail,
+            contrato: this.resolveProfileContract(data),
             modo: 'INS',
           });
         }
@@ -2459,6 +2487,7 @@ export class DecisionTreeService {
           telefono: phone,
           celular: phone,
           email: data.patientEmail,
+          contrato: this.resolveProfileContract(data),
           modo: 'INS',
         });
       }
@@ -2538,6 +2567,7 @@ export class DecisionTreeService {
           telefono: data.patientPhone || data.applicantPhone,
           celular: data.patientPhone || data.applicantPhone,
           email: data.patientEmail || data.applicantEmail,
+          contrato: this.resolveProfileContract(data),
           modo: 'INS',
         });
 
@@ -2946,6 +2976,7 @@ export class DecisionTreeService {
             telefono: data.patientPhone || data.applicantPhone || data.contactPhone,
             celular: data.patientPhone || data.applicantPhone || data.contactPhone,
             email: data.patientEmail,
+            contrato: this.resolveProfileContract(data),
             modo: 'INS',
           });
         }
@@ -3860,6 +3891,7 @@ export class DecisionTreeService {
                 telefono: data.patientPhone || (data as any)?.phone,
                 celular: data.patientPhone || (data as any)?.phone,
                 email: data.patientEmail || (data as any)?.email,
+                contrato: this.resolveProfileContract(data),
               });
 
               const asignarRes = await HunApiService.asignarCita({
@@ -4882,9 +4914,13 @@ export class DecisionTreeService {
             if (first.Nombre_Paciente && (!data.patientName || data.patientName.toLowerCase() === 'paciente')) {
               data.patientName = first.Nombre_Paciente.trim();
             }
-            if (first.Cod_Eps && !data.epsCode) {
-              data.epsCode = first.Cod_Eps.trim();
-              data.hasActiveEps = true;
+            if (!data.epsCode) {
+              data.epsCode =
+                data.userTypeCode === 'COLABORADOR_HUN'
+                  ? CONFIG.HUN_CONTRATO_EMPLEADOS || 'HUN25'
+                  : data.userTypeCode === 'EGRESADO_UNAL'
+                  ? CONFIG.HUN_CONTRATO_EGRESADOS || 'HUN323'
+                  : CONFIG.HUN_CONTRATO_PARTICULAR || CONFIG.HUN_DEFAULT_EPS || 'HUN002';
             }
           }
         } catch (e) {
@@ -5213,6 +5249,7 @@ export class DecisionTreeService {
                 telefono: data.patientPhone || data.contactPhone,
                 celular: data.patientPhone || data.contactPhone,
                 email: data.patientEmail,
+                contrato: this.resolveProfileContract(data),
                 modo: 'INS',
               });
 
