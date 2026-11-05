@@ -17,6 +17,7 @@ export const SimulatorTab: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [simulatorSize, setSimulatorSize] = useState<'compact' | 'wide' | 'extra'>('wide');
   const [activeSheet, setActiveSheet] = useState<{
     title: string;
     options: Array<{ id: string; title: string; description?: string }>;
@@ -250,7 +251,7 @@ export const SimulatorTab: React.FC = () => {
           <label className="block text-xs font-semibold text-slate-700 mb-2">
             Pruebas rápidas de los flujos HUN:
           </label>
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-1.5 max-h-[520px] overflow-y-auto pr-1">
             {quickActions.map((qa, idx) => (
               <button
                 key={idx}
@@ -265,12 +266,55 @@ export const SimulatorTab: React.FC = () => {
         </div>
       </div>
 
-      {/* Columna Derecha: Mockup de Celular WhatsApp */}
-      <div className="lg:col-span-8 flex justify-center">
-        <div className="w-full max-w-md bg-[#efeae2] rounded-3xl shadow-xl border-8 border-slate-800 overflow-hidden flex flex-col h-[700px] relative">
+      {/* Columna Derecha: Mockup de Celular WhatsApp Ampliado */}
+      <div className="lg:col-span-8 flex flex-col items-center">
+        {/* Selector de Tamaño del Simulador */}
+        <div className={`w-full ${simulatorSize === 'extra' ? 'max-w-3xl' : simulatorSize === 'wide' ? 'max-w-2xl' : 'max-w-md'} flex items-center justify-between mb-2.5 px-2 transition-all duration-300`}>
+          <div className="flex items-center gap-1.5 text-xs text-slate-600 font-semibold">
+            <Smartphone className="w-4 h-4 text-emerald-600" />
+            <span>Tamaño del Simulador:</span>
+          </div>
+          <div className="flex items-center gap-1 bg-slate-200/80 p-1 rounded-xl border border-slate-300 shadow-2xs">
+            <button
+              type="button"
+              onClick={() => setSimulatorSize('compact')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition ${
+                simulatorSize === 'compact'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              📱 Compacto (450px)
+            </button>
+            <button
+              type="button"
+              onClick={() => setSimulatorSize('wide')}
+              className={`px-3 py-1 rounded-lg text-xs font-semibold transition ${
+                simulatorSize === 'wide'
+                  ? 'bg-white text-emerald-700 shadow-xs ring-1 ring-emerald-500/30'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              📲 Amplio (670px)
+            </button>
+            <button
+              type="button"
+              onClick={() => setSimulatorSize('extra')}
+              className={`px-3 py-1 rounded-lg text-xs font-semibold transition ${
+                simulatorSize === 'extra'
+                  ? 'bg-white text-blue-700 shadow-xs ring-1 ring-blue-500/30'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              🖥️ Extra Grande (770px)
+            </button>
+          </div>
+        </div>
+
+        <div className={`w-full ${simulatorSize === 'extra' ? 'max-w-3xl h-[880px]' : simulatorSize === 'wide' ? 'max-w-2xl h-[820px]' : 'max-w-md h-[720px]'} bg-[#efeae2] rounded-3xl shadow-2xl border-8 border-slate-800 overflow-hidden flex flex-col relative transition-all duration-300`}>
           {/* Barra Superior WhatsApp */}
           <div className="bg-[#075e54] text-white px-4 py-3 flex items-center space-x-3 shadow-md">
-            <div className="w-9 h-9 rounded-full bg-white overflow-hidden p-0.5 shadow flex-shrink-0 flex items-center justify-center border border-white/40">
+            <div className="w-10 h-10 rounded-full bg-white overflow-hidden p-0.5 shadow flex-shrink-0 flex items-center justify-center border border-white/40">
               <img src="/nicol-sticker-clean.png" alt="Nicol Asistente HUN" className="w-full h-full object-contain" />
             </div>
             <div className="flex-1 min-w-0">
@@ -315,7 +359,7 @@ export const SimulatorTab: React.FC = () => {
                       </div>
 
                       {/* Burbuja con Padding Derecho para el texto */}
-                      <div className="bg-white text-slate-900 rounded-2xl rounded-tl-none p-3 pr-14 text-xs leading-relaxed shadow-sm max-w-[88%] relative z-0 border border-slate-200/70">
+                      <div className={`bg-white text-slate-900 rounded-2xl rounded-tl-none ${simulatorSize === 'compact' ? 'p-3 text-xs' : 'p-3.5 sm:p-4 text-[13.5px]'} pr-14 leading-relaxed shadow-sm max-w-[88%] relative z-0 border border-slate-200/70`}>
                         <div className="flex items-center gap-1.5 text-[10px] font-bold text-[#075e54] mb-1.5">
                           <span className="w-2 h-2 rounded-full bg-[#00a884]"></span>
                           <span>Hospital Universitario Nacional - HUN</span>
@@ -373,7 +417,9 @@ export const SimulatorTab: React.FC = () => {
                     className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
                   >
                     <div
-                      className={`max-w-[82%] rounded-lg p-2.5 text-xs leading-relaxed shadow-sm relative ${
+                      className={`max-w-[85%] rounded-2xl ${
+                        simulatorSize === 'compact' ? 'p-2.5 text-xs' : 'p-3.5 text-[13.5px]'
+                      } leading-relaxed shadow-sm relative ${
                         isUser
                           ? 'bg-[#d9fdd3] text-slate-800 rounded-tr-none'
                           : isAgent
@@ -407,7 +453,9 @@ export const SimulatorTab: React.FC = () => {
                               type="button"
                               onClick={() => handleSendMessage(opt.title.replace(/^[^\w\s]+\s*/, '').trim() || opt.id)}
                               disabled={loading}
-                              className="px-2.5 py-1.5 bg-[#f0f9f6] hover:bg-[#00a884] text-[#00a884] hover:text-white border border-[#00a884]/40 rounded-lg text-[11px] font-semibold transition flex items-center justify-center shadow-xs active:scale-95 disabled:opacity-50"
+                              className={`px-3 py-1.5 bg-[#f0f9f6] hover:bg-[#00a884] text-[#00a884] hover:text-white border border-[#00a884]/40 rounded-xl ${
+                                simulatorSize === 'compact' ? 'text-[11px]' : 'text-xs'
+                              } font-semibold transition flex items-center justify-center shadow-xs active:scale-95 disabled:opacity-50`}
                             >
                               {opt.title}
                             </button>
@@ -426,7 +474,9 @@ export const SimulatorTab: React.FC = () => {
                                 options: m.interactivePayload?.options || [],
                               })
                             }
-                            className="w-full py-2 px-3 bg-[#e7f7f2] hover:bg-[#d1f2e6] text-[#075e54] font-bold text-xs rounded-xl border border-[#00a884]/30 flex items-center justify-between shadow-xs transition active:scale-[0.98]"
+                            className={`w-full py-2.5 px-3.5 bg-[#e7f7f2] hover:bg-[#d1f2e6] text-[#075e54] font-bold ${
+                              simulatorSize === 'compact' ? 'text-xs' : 'text-sm'
+                            } rounded-xl border border-[#00a884]/30 flex items-center justify-between shadow-xs transition active:scale-[0.98]`}
                           >
                             <span className="flex items-center gap-1.5 truncate">
                               <Menu className="w-3.5 h-3.5 text-[#00a884]" />
@@ -460,19 +510,23 @@ export const SimulatorTab: React.FC = () => {
               e.preventDefault();
               handleSendMessage();
             }}
-            className="p-2.5 bg-[#f0f2f5] flex items-center space-x-2 border-t border-slate-200 relative z-10"
+            className="p-3 bg-[#f0f2f5] flex items-center space-x-2.5 border-t border-slate-200 relative z-10"
           >
             <input
               type="text"
               placeholder="Escribe un mensaje aquí..."
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              className="flex-1 bg-white px-3.5 py-2 text-xs rounded-full border border-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-600"
+              className={`flex-1 bg-white px-4 py-2.5 ${
+                simulatorSize === 'compact' ? 'text-xs' : 'text-sm'
+              } rounded-full border border-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-600 shadow-2xs`}
             />
             <button
               type="submit"
               disabled={loading || !inputText.trim()}
-              className="w-9 h-9 rounded-full bg-[#00a884] hover:bg-[#008f6f] disabled:opacity-50 text-white flex items-center justify-center shadow transition"
+              className={`${
+                simulatorSize === 'compact' ? 'w-9 h-9' : 'w-10 h-10'
+              } rounded-full bg-[#00a884] hover:bg-[#008f6f] disabled:opacity-50 text-white flex items-center justify-center shadow transition shrink-0`}
             >
               <Send className="w-4 h-4 ml-0.5" />
             </button>
