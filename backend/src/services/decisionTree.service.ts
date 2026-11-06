@@ -311,6 +311,95 @@ export class DecisionTreeService {
   }
 
   /**
+   * Formatea la lista numerada de citas médicas confirmadas del paciente
+   */
+  public static formatAppointmentsList(apts: any[]): string {
+    return apts
+      .map((a: any, i: number) => {
+        let dt = 'Fecha programada';
+        if (a.dateTime) {
+          const dateObj = new Date(a.dateTime);
+          if (!isNaN(dateObj.getTime())) {
+            dt = dateObj.toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+          }
+        } else if (a.dateTimeStr) {
+          dt = a.dateTimeStr;
+        }
+        let doc = a.doctorName || 'Especialista HUN';
+        if (!doc.toLowerCase().startsWith('dr')) {
+          doc = `Dr(a). ${doc}`;
+        }
+        return `${i + 1}️⃣ ${a.specialty || 'Consulta Externa'} · ${doc} (${dt})`;
+      })
+      .join('\n');
+  }
+
+  /**
+   * Resuelve y unifica las citas médicas activas/confirmadas del paciente (Store local y Hosvital)
+   */
+  public static async resolveConfirmedAppointmentsForPatient(data: FlowStateData): Promise<any[]> {
+    const confirmedStatuses = ['CONFIRMED', 'RESCHEDULED', 'PAID_VIRTUAL', 'PAY_AT_WINDOW', 'CONFIRMED_REFERRAL', 'HELD', 'PENDING'];
+
+    // 1. Citas locales pasadas en flowData o registradas en Store
+    let localApts: any[] = [];
+    if (Array.isArray(data.availableConfirmedAppointments) && data.availableConfirmedAppointments.length > 0) {
+      localApts = data.availableConfirmedAppointments.filter((a: any) =>
+        confirmedStatuses.includes((a.status || '').toUpperCase())
+      );
+    }
+    if (localApts.length === 0 && Array.isArray(data.confirmedAppointments) && data.confirmedAppointments.length > 0) {
+      localApts = data.confirmedAppointments.filter((a: any) =>
+        confirmedStatuses.includes((a.status || '').toUpperCase())
+      );
+    }
+    if (localApts.length === 0 && (data.contactId || data.patientDoc)) {
+      localApts = store.getConfirmedAppointmentsForPatient(data.patientDoc, data.contactId);
+    }
+
+    // 2. Si no hay citas locales y Hosvital está habilitado, consultar citas en Hosvital (con timeout de 3.5s)
+    if (localApts.length === 0 && data.patientDoc && CONFIG.HOSVITAL_ENABLED) {
+      try {
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Hosvital lookup timeout')), 3500)
+        );
+        const hosvitalApts = await Promise.race([
+          HunApiService.consultarCitasPaciente(
+            data.patientDocumentType || 'CC',
+            data.patientDoc
+          ),
+          timeoutPromise,
+        ]);
+        if (Array.isArray(hosvitalApts) && hosvitalApts.length > 0) {
+          const validHosvital = hosvitalApts.filter(
+            (c) => !/cancelad|anulad|inactiv/i.test(c.ESTADO || '')
+          );
+          if (validHosvital.length > 0) {
+            return validHosvital.map((h, i) => {
+              const dateParts = (h.Cita_Fecha || '').split('T')[0] || h.Cita_Fecha;
+              const timeParts = h.Hora_Cita || '';
+              const dt = new Date(`${dateParts}T${timeParts}`);
+              return {
+                id: `HOSVITAL-${h.Numero_Cita || i + 1}`,
+                numeroCitaHosvital: h.Numero_Cita,
+                specialty: h.Especialidad || 'Consulta Externa',
+                doctorName: h.Medico || 'Especialista HUN',
+                dateTime: isNaN(dt.getTime()) ? new Date() : dt,
+                status: 'CONFIRMED',
+                patientName: h.Nombre_Paciente || data.patientName,
+                patientDoc: h.Doc_Paciente || data.patientDoc,
+              };
+            });
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[resolveConfirmedAppointments] Error consultando citas en Hosvital: ${err.message}`);
+      }
+    }
+
+    return localApts;
+  }
+
+  /**
    * Genera la Ficha de Datos del Usuario
    */
   public static formatUserFicha(data: {
@@ -1662,9 +1751,43 @@ export class DecisionTreeService {
             modo: 'INS',
           });
         }
+        // Validar si el paciente tiene citas médicas previamente agendadas en el HUN
+        const activeApts = await this.resolveConfirmedAppointmentsForPatient(data);
+        if (activeApts.length > 0) {
+          const listText = this.formatAppointmentsList(activeApts);
+          return this.sanitizeResult({
+            replyMessages: [
+              `Hemos detectado que tienes agendadas las siguientes citas médicas en el Hospital Universitario Nacional 🏥:\n\n${listText}`,
+              '¿Qué gestión deseas realizar con tu cita?\n\n1️⃣ Agendar Cita Médica\n2️⃣ Reprogramar Cita Médica\n3️⃣ Cancelar Cita Médica\n4️⃣ Contactar con un asesor\n5️⃣ Volver al Menú Principal\n\n(Puedes pulsar el botón de opciones o responder con el número)',
+            ],
+            interactivePayload: {
+              type: 'list',
+              title: 'Gestión de Citas Médicas',
+              buttonText: '📋 Opciones de Cita',
+              options: [
+                { id: '1', title: '1. Agendar Cita Médica', description: 'Consulta externa ambulatoria con especialista HUN' },
+                { id: '2', title: '2. Reprogramar Cita', description: 'Modificar fecha u hora de una cita asignada' },
+                { id: '3', title: '3. Cancelar Cita', description: 'Cancelar una cita médica confirmada en el hospital' },
+                { id: '4', title: '4. Contactar con Asesor', description: 'Hablar con un asesor de atención al usuario' },
+                { id: '5', title: '5. Menú Principal', description: 'Regresar al menú principal de opciones' },
+              ],
+            },
+            nextFlow: 'IDLE',
+            nextStep: 'CITA_MEDICA_MENU',
+            updatedData: {
+              ...data,
+              patientFound: true,
+              availableConfirmedAppointments: activeApts,
+              confirmedAppointments: activeApts,
+              fallbackCount: 0,
+            },
+          });
+        }
+
         const root = this.getRootMenu(
           data.patientName,
-          '¡Perfecto! Continuemos con tu solicitud.'
+          '¡Perfecto! Continuemos con tu solicitud.',
+          data
         );
         return {
           ...root,
@@ -2094,9 +2217,43 @@ export class DecisionTreeService {
           });
         }
 
+        const activeApts = await this.resolveConfirmedAppointmentsForPatient(data);
+        if (activeApts.length > 0) {
+          const listText = this.formatAppointmentsList(activeApts);
+          return this.sanitizeResult({
+            replyMessages: [
+              `✅ Tus datos han sido actualizados correctamente.\n\n${ficha}`,
+              `Hemos detectado que tienes agendadas las siguientes citas médicas en el Hospital Universitario Nacional 🏥:\n\n${listText}`,
+              '¿Qué gestión deseas realizar con tu cita?\n\n1️⃣ Agendar Cita Médica\n2️⃣ Reprogramar Cita Médica\n3️⃣ Cancelar Cita Médica\n4️⃣ Contactar con un asesor\n5️⃣ Volver al Menú Principal\n\n(Puedes pulsar el botón de opciones o responder con el número)',
+            ],
+            interactivePayload: {
+              type: 'list',
+              title: 'Gestión de Citas Médicas',
+              buttonText: '📋 Opciones de Cita',
+              options: [
+                { id: '1', title: '1. Agendar Cita Médica', description: 'Consulta externa ambulatoria con especialista HUN' },
+                { id: '2', title: '2. Reprogramar Cita', description: 'Modificar fecha u hora de una cita asignada' },
+                { id: '3', title: '3. Cancelar Cita', description: 'Cancelar una cita médica confirmada en el hospital' },
+                { id: '4', title: '4. Contactar con Asesor', description: 'Hablar con un asesor de atención al usuario' },
+                { id: '5', title: '5. Menú Principal', description: 'Regresar al menú principal de opciones' },
+              ],
+            },
+            nextFlow: 'IDLE',
+            nextStep: 'CITA_MEDICA_MENU',
+            updatedData: {
+              ...data,
+              patientFound: true,
+              availableConfirmedAppointments: activeApts,
+              confirmedAppointments: activeApts,
+              fallbackCount: 0,
+            },
+          });
+        }
+
         const root = this.getRootMenu(
           data.patientName,
-          `✅ Tus datos han sido actualizados correctamente.\n\n${ficha}\n\n¡Perfecto! Continuemos con tu solicitud.`
+          `✅ Tus datos han sido actualizados correctamente.\n\n${ficha}\n\n¡Perfecto! Continuemos con tu solicitud.`,
+          data
         );
         return {
           ...root,
@@ -2157,11 +2314,19 @@ export class DecisionTreeService {
           });
         }
 
-        return this.getCitaMedicaMenu({
-          ...data,
-          requestForSelf: true,
-          fallbackCount: 0,
-        });
+        const targetPatient = data.patientName || patientName || '';
+        const note = targetPatient
+          ? `Continuemos con el agendamiento para *${targetPatient}* (Doc: ${data.patientDoc}).`
+          : '';
+        return {
+          replyMessages: [
+            `Has seleccionado *Agendar Cita Médica* ambulatoria en el HUN 🏥.${note ? `\n\n${note}` : ''}`,
+            this.getSpecialtiesMenuPrompt(),
+          ],
+          nextFlow: 'F01_CONSULTA',
+          nextStep: 'F01_SPECIALTY',
+          updatedData: { ...data, requestForSelf: true, fallbackCount: 0 },
+        };
       }
 
       if (
@@ -3347,9 +3512,12 @@ export class DecisionTreeService {
         lower.includes('reagendar') ||
         lower.includes('cambiar cita')
       ) {
-        const apts = (data.confirmedAppointments || []).filter(
+        let apts = (data.availableConfirmedAppointments || data.confirmedAppointments || []).filter(
           (a: any) => a.status === 'CONFIRMED' || a.status === 'RESCHEDULED' || a.status === 'HELD' || a.status === 'PENDING'
         );
+        if (apts.length === 0) {
+          apts = await this.resolveConfirmedAppointmentsForPatient(data);
+        }
         if (apts.length === 0) {
           return {
             replyMessages: [
@@ -3362,16 +3530,11 @@ export class DecisionTreeService {
           };
         }
 
-        const listText = apts
-          .map((a: any, i: number) => {
-            const dt = new Date(a.dateTime).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
-            return `${i + 1}️⃣ ${a.specialty} · ${a.doctorName} (${dt})`;
-          })
-          .join('\n');
+        const listText = this.formatAppointmentsList(apts);
 
         return {
           replyMessages: [
-            `Estas son tus citas médicas confirmadas en el HUN:\n\n${listText}\n\nPor favor responde con el número de la cita que deseas reprogramar:`,
+            `Estas son tus citas médicas confirmadas en el HUN:\n\n${listText}\n\nPor favor responde con el número de la cita que deseas reagendar:`,
           ],
           nextFlow: 'REPROGRAMAR_CITA',
           nextStep: 'SELECT_APPOINTMENT',
@@ -3387,9 +3550,12 @@ export class DecisionTreeService {
         lower.includes('cancelar') ||
         lower.includes('anular')
       ) {
-        const apts = (data.confirmedAppointments || []).filter(
+        let apts = (data.availableConfirmedAppointments || data.confirmedAppointments || []).filter(
           (a: any) => a.status === 'CONFIRMED' || a.status === 'RESCHEDULED' || a.status === 'HELD' || a.status === 'PENDING'
         );
+        if (apts.length === 0) {
+          apts = await this.resolveConfirmedAppointmentsForPatient(data);
+        }
         if (apts.length === 0) {
           return {
             replyMessages: [
@@ -3402,12 +3568,7 @@ export class DecisionTreeService {
           };
         }
 
-        const listText = apts
-          .map((a: any, i: number) => {
-            const dt = new Date(a.dateTime).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
-            return `${i + 1}️⃣ ${a.specialty} · ${a.doctorName} (${dt})`;
-          })
-          .join('\n');
+        const listText = this.formatAppointmentsList(apts);
 
         return {
           replyMessages: [

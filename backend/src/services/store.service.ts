@@ -1390,6 +1390,31 @@ class DataStore {
     );
   }
 
+  public getConfirmedAppointmentsForPatient(documentId?: string, contactId?: string): AppointmentData[] {
+    const confirmedStatuses = ['CONFIRMED', 'RESCHEDULED', 'PAID_VIRTUAL', 'PAY_AT_WINDOW', 'CONFIRMED_REFERRAL', 'HELD', 'PENDING'];
+    const cleanDoc = documentId ? documentId.replace(/\D/g, '') : undefined;
+
+    const matchingContactIds = new Set<string>();
+    if (contactId) matchingContactIds.add(contactId);
+    if (cleanDoc) {
+      for (const [id, c] of this.contacts.entries()) {
+        if (c.documentId && c.documentId.replace(/\D/g, '') === cleanDoc) {
+          matchingContactIds.add(id);
+        }
+      }
+    }
+
+    return this.appointments
+      .filter((a) => {
+        const matchesContact =
+          matchingContactIds.has(a.contactId) ||
+          (cleanDoc !== undefined && (a as any).patientDoc === cleanDoc);
+        const matchesStatus = confirmedStatuses.includes((a.status || '').toUpperCase());
+        return matchesContact && matchesStatus;
+      })
+      .map((apt) => this.enrichAppointment(apt));
+  }
+
   public async updateAppointmentSlot(
     id: string,
     dateTime: Date,
